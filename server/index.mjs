@@ -24,13 +24,15 @@ async function main() {
   }
 
   let closing = false;
-  const close = async () => {
+  const close = async (signal) => {
     if (closing) return;
     closing = true;
+    console.error(`Taskboard shutdown requested (${signal})`);
     await app.close();
+    console.error(`Taskboard shutdown complete (${signal})`);
   };
-  process.once("SIGINT", () => close().then(() => process.exit(0)));
-  process.once("SIGTERM", () => close().then(() => process.exit(0)));
+  process.once("SIGINT", () => close("SIGINT").then(() => process.exit(0)));
+  process.once("SIGTERM", () => close("SIGTERM").then(() => process.exit(0)));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

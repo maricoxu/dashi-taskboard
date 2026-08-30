@@ -94,6 +94,28 @@ This starts the local Taskboard service when needed. It reuses an open Codex wit
 
 The source launcher writes its authenticated endpoint to `.data/launcher-runtime.json`. A `taskctl` command installed with `npm link` reads this file by default, so a normal shell and a Codex task opened from the panel use the same Taskboard service without an extra environment variable.
 
+### Quick enable on another Mac
+
+Install the official ChatGPT/Codex App, Node.js 22.5+, and Git, then run:
+
+```bash
+git clone https://github.com/maricoxu/dashi-taskboard.git ~/Code/dashi-taskboard
+cd ~/Code/dashi-taskboard
+npm ci
+npm run source-launcher:install
+```
+
+Open `Codex Taskboard Source.app` from Finder after installation. To sync the fork later:
+
+```bash
+cd ~/Code/dashi-taskboard
+git pull --ff-only origin main
+npm ci
+npm run source-launcher:install
+```
+
+The source launcher reads the checked-out code directly and does not copy old `.data` records. Migrate existing tasks through the Taskboard snapshot/Handoff flow instead of placing an active SQLite database in iCloud.
+
 ### macOS App: open and inject without a terminal
 
 For Tauri development, run:

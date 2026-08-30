@@ -53,3 +53,24 @@ test("an unhealthy live child exits before its replacement starts", async () => 
   ]);
   await supervisor.stop();
 });
+
+test("an identity conflict fails without killing the other instance", async () => {
+  const events = [];
+  const supervisor = createTaskboardSupervisor({
+    detached: false,
+    isReachable: async () => false,
+    getReachabilityFailure: () => ({ kind: "identity" }),
+    waitUntilReachable: async () => events.push(["health"]),
+    start: () => {
+      events.push(["start"]);
+      return new ManagedChild("unexpected", events);
+    },
+  });
+
+  await assert.rejects(
+    supervisor.ensure({ force: true }),
+    /identity conflict/i,
+  );
+  assert.deepEqual(events, []);
+  await supervisor.stop();
+});

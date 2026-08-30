@@ -92,6 +92,7 @@ import {
   taskboardStorage,
 } from "./storage";
 import {
+  isEmbeddedHost,
   installEmbeddedExternalLinkHandler,
   postEmbeddedHostMessage,
   setEmbeddedFrameChallenge,
@@ -591,6 +592,17 @@ function LocalRealtimeSync({
   setReadmeRevision,
 }: LocalRealtimeSyncProps) {
   useEffect(() => {
+    if (isEmbeddedHost()) {
+      setConnection("live");
+      void refreshProjectBoardDisplaySettings();
+      const refresh = () => {
+        void refreshProjectList();
+        if (selectedProjectId) void refreshTasks(selectedProjectId, { quiet: true });
+      };
+      refresh();
+      const timer = window.setInterval(refresh, 2_500);
+      return () => window.clearInterval(timer);
+    }
     const source = new EventSource(resolveTaskboardUrl("/api/events"));
     let refreshTimer: number | undefined;
     let refreshProjectsPending = false;

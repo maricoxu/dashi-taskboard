@@ -164,6 +164,7 @@ test("opaque iframe messages require the current document capability", () => {
   assert.match(source, /message\.challenge !== frameChallenge/);
   assert.match(source, /nextFrame\.addEventListener\("load", challengeFrameDocument\)/);
   assert.match(source, /type: "taskboard:frame-challenge"/);
+  assert.match(source, /capability: frameCapability/);
   assert.match(source, /frameCapability = ""/);
   assert.doesNotMatch(source, /nextFrame\.addEventListener\("load", postHostContext\)/);
   assert.match(source, /postMessage\(message, frameOrigin === "null" \? "\*" : frameOrigin\)/);
@@ -175,6 +176,9 @@ test("HTTP and HTTPS links are opened by the authenticated host instead of a san
   assert.match(embeddedHost, /event\.preventDefault\(\)/);
   assert.match(embeddedHost, /type: "taskboard:open-external"/);
   assert.match(embeddedHost, /challenge: activeFrameChallenge/);
+  assert.match(embeddedHost, /receiveEmbeddedFrameChallenge/);
+  assert.match(embeddedHost, /type !== "taskboard:frame-challenge"/);
+  assert.match(embeddedHost, /postEmbeddedHostMessage\(\{ type: "taskboard:ready" \}\)/);
   assert.match(source, /message\.type === "taskboard:open-external"/);
   assert.match(source, /requestHost\("open-external", \{ url: url\.href \}\)/);
   assert.match(source, /url\.protocol !== "http:" && url\.protocol !== "https:"/);

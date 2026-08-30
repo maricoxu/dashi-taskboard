@@ -82,6 +82,8 @@ npm run codex:inject -- --port 9231 --open
 
 使用嵌入式面板时，让注入器终端保持运行。原 Codex 窗口不会变化，新窗口会显示 Taskboard 侧边栏入口。如果端口 `9231` 已被占用，请在两个命令中使用另一个端口。
 
+内嵌面板使用隔离的 host bridge：iframe 的 CSS/JavaScript 构建资源由注入器内联，面板对本地 Taskboard 的 `/api/...` 请求由 Codex host 代发。这样保留 iframe 的 sandbox 隔离，不依赖 Chromium 对 `origin=null` 直接访问回环地址的许可。普通浏览器页面仍直接访问 HTTP 服务；前端源码修改后运行 `npm run build`，再刷新或重启注入器使内嵌版本更新。
+
 ### 推荐：用一个命令启动独立 Taskboard 窗口
 
 让现有 Codex 窗口保持打开，然后运行：
@@ -92,7 +94,49 @@ CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
 
 该命令会在需要时启动本地 Taskboard 服务。它会复用已打开且有可用 CDP 渲染器的 Codex；普通 Codex 没有 CDP 时，它会在该实例的原生浏览面板中打开 Taskboard；没有打开 Codex 时，它会使用独立配置文件和仅限回环访问的端口 `9231` 启动官方 macOS Codex App。有可用 CDP 时，它会在 Plugins 后注入一个原生外观的 Taskboard 入口，并持续监视服务和替换后的渲染器。使用嵌入式面板时，请让该命令保持运行。启动器不会修改 `ChatGPT.app` 或其 `app.asar`。
 
-源码启动器会把带身份信息的服务地址写入 `.data/launcher-runtime.json`。通过 `npm link` 安装的 `taskctl` 默认读取此文件。因此，普通 shell 和从面板打开的 Codex 任务无需设置额外环境变量，即可使用同一个 Taskboard 服务。
+源码启动器会把带身份信息的服务地址写入 `.data/launcher-runtime.json`，并将启动器及子进程日志追加到 macOS 的 `~/Library/Logs/Codex Taskboard/codex-taskboard-source.log`（可用 `CODEX_TASKBOARD_LOG_FILE` 覆盖）。通过 `npm link` 安装的 `taskctl` 默认读取 runtime 文件。因此，普通 shell 和从面板打开的 Codex 任务无需设置额外环境变量，即可使用同一个 Taskboard 服务。
+
+不希望每次打开终端时，可安装直接指向当前 Git 工作副本的 macOS 源码启动器：
+
+```bash
+npm run source-launcher:install
+```
+
+这个一键命令会先构建当前源码，再安装 `/Applications/Codex Taskboard Source.app` 和登录启动项，并继续使用仓库内 `.data`。制作、更新和跨机器复制步骤见 [macOS 源码启动器](docs/source-launcher-macos.md)。
+
+### 另一台 Mac 快速启用
+
+在另一台 Mac 上准备官方 ChatGPT/Codex App、Node.js 22.5+ 和 Git，然后执行：
+
+```bash
+git clone https://github.com/maricoxu/dashi-taskboard.git ~/Code/dashi-taskboard
+cd ~/Code/dashi-taskboard
+npm ci
+npm run source-launcher:install
+```
+
+安装完成后，从 Finder 打开 `Codex Taskboard Source.app`。以后同步 fork 的最新代码时执行：
+
+```bash
+cd ~/Code/dashi-taskboard
+git pull --ff-only origin main
+npm ci
+npm run source-launcher:install
+```
+
+这套流程直接运行当前 Git 工作副本，不会复制本机旧任务数据。需要迁移旧 `.data` 时，使用 Taskboard 快照/Handoff 流程，不要把正在使用的 SQLite 放进 iCloud 同步目录。
+
+要调试 Codex 内嵌页面，可在已用 `--remote-debugging-port=9232` 启动 Codex 后，另开终端运行：
+
+```bash
+npm run codex:observe -- --port 9232
+```
+
+它会记录 Codex renderer、Taskboard 页面和 iframe 的 Network/Console/异常/frame 导航事件，日志写入 `~/Library/Logs/Codex Taskboard/codex-embed-observer.log`。它只观察，不修改任务或页面状态。
+
+如果终端 3 看到 `reusedInjectorPid`，表示同一仓库和 CDP 端口已有 injector 在运行，本次命令只复用它，不会再创建第二个 host。iframe 重载产生的 `ERR_ABORTED` 取消请求会由 observer 忽略；真正需要关注的是 `runtime.exception`、未预期的 `network.failed`，以及注入结果中的 `frameReady: false`。
+
+如果看到 `Taskboard service identity conflict`，表示另一个 Taskboard 实例已经占用 47823。新版 supervisor 会直接停止当前启动尝试，不会再发送 `SIGKILL` 去杀掉对方；请保留其中一套服务和 `.data`，再启动对应的 injector。
 
 ### macOS App：无需终端即可打开和注入
 

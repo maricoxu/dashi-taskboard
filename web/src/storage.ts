@@ -1,3 +1,5 @@
+import { fetchEmbeddedHost } from "./embeddedHost.mjs";
+
 const memoryStorage = new Map<string, string>();
 export const PROJECT_BOARD_DISPLAY_SETTINGS_KEY_PREFIX = "taskboard.project-board-display-settings.v3.";
 const RETRY_DELAY_MS = 250;
@@ -12,7 +14,8 @@ function isProjectBoardDisplaySettingsKey(key: string) {
 }
 
 async function readServerStorage() {
-  const response = await fetch(new URL("api/client-storage", document.baseURI));
+  const url = new URL("api/client-storage", document.baseURI);
+  const response = await fetchEmbeddedHost(url) || await fetch(url);
   if (!response.ok) throw new Error(`Taskboard storage returned ${response.status}`);
   const payload = await response.json() as { entries: Record<string, string> };
   if (localStorageBackend) {
@@ -43,7 +46,13 @@ function persist(key: string, value: string | null) {
     let retryDelay = RETRY_DELAY_MS;
     while (true) {
       try {
-        const response = await fetch(new URL("api/client-storage", document.baseURI), {
+        const url = new URL("api/client-storage", document.baseURI);
+        const response = await fetchEmbeddedHost(url, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body,
+          keepalive,
+        }) || await fetch(url, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body,

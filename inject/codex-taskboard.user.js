@@ -1,6 +1,10 @@
 (() => {
   "use strict";
 
+  // The registration is global to a renderer; never mount the Codex shell
+  // injector inside the Taskboard iframe it creates.
+  if (window.top !== window) return;
+
   const VERSION = "0.6.13";
   const SOURCE_HASH = window.__CODEX_TASKBOARD_SOURCE_HASH__;
   const SENTINEL_KEY = "__codexTaskboardInjection__";
@@ -120,6 +124,12 @@
       return hostText(error.taskboardText.chinese, error.taskboardText.english);
     }
     return error instanceof Error ? error.message : String(error || "");
+  }
+
+  function diagnostic(event, detail = {}) {
+    try {
+      console.debug(`[codex-taskboard] ${event}`, JSON.stringify(detail));
+    } catch (_) {}
   }
 
   function normalizeThreadId(value) {
@@ -809,9 +819,15 @@
   }
 
   function postFrameChallenge() {
+    diagnostic("frame-challenge-post", {
+      hasFrame: Boolean(frame?.contentWindow),
+      hasChallenge: Boolean(frameChallenge),
+      frameOrigin,
+    });
     if (!frameChallenge) return;
     postToFrame({
       type: "taskboard:frame-challenge",
+      capability: frameCapability,
       payload: { challenge: frameChallenge },
     }, true);
   }
@@ -1260,6 +1276,7 @@
 
   function challengeFrameDocument(event) {
     if (!frame || event.currentTarget !== frame) return;
+    diagnostic("frame-load", { hasChallengeBeforeRotation: Boolean(frameChallenge) });
     frameReady = false;
     frameChallenge = crypto.randomUUID();
     if (active) showLoading();
@@ -1275,6 +1292,16 @@
       || !frameCapability
       || message.capability !== frameCapability
     ) return;
+    if (
+      message.type === "taskboard:frame-awaiting-challenge"
+      || message.type === "taskboard:ready"
+    ) {
+      diagnostic("frame-message", {
+        type: message.type,
+        hasChallenge: Boolean(frameChallenge),
+        challengeMatches: Boolean(frameChallenge && message.challenge === frameChallenge),
+      });
+    }
     if (message.type === "taskboard:frame-awaiting-challenge") {
       postFrameChallenge();
       return;
@@ -1318,6 +1345,29 @@
     }
     if (message.type === "taskboard:date-picker-request") {
       handleDatePickerRequest(message.payload);
+      return;
+    }
+    if (message.type === "taskboard:http-request") {
+      const requestId = typeof message.payload?.requestId === "string"
+        ? message.payload.requestId
+        : "";
+      if (!requestId) return;
+      void requestHost("http-request", message.payload, 35_000)
+        .then((response) => {
+          postToFrame({
+            type: "taskboard:http-response",
+            payload: { requestId, ...response },
+          }, true);
+        })
+        .catch((error) => {
+          postToFrame({
+            type: "taskboard:http-response",
+            payload: {
+              requestId,
+              error: hostErrorText(error),
+            },
+          }, true);
+        });
       return;
     }
     if (message.type === "taskboard:create-thread") void createThreadForTask(message.payload);
@@ -1487,6 +1537,12 @@
     frameOrigin = "null";
     const frameName = `codex-taskboard-${crypto.randomUUID()}`;
     frameCapability = crypto.randomUUID();
+    // Generate the challenge before inserting about:blank. The sandboxed
+    // document can execute immediately after the host replaces it, before
+    // the iframe load event fires; having a challenge ready lets the first
+    // frame-awaiting message receive a response instead of racing the load
+    // handler.
+    frameChallenge = crypto.randomUUID();
     const nextFrame = document.createElement("iframe");
     nextFrame.id = FRAME_ID;
     nextFrame.name = frameName;

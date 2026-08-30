@@ -10,10 +10,12 @@
     "taskctl": "./cli/taskctl.mjs"
   },
   "scripts": {
-    "codex": "node scripts/codex-injector.mjs --launch --watch --open --port 9231",
-    "codex:inject": "node scripts/codex-injector.mjs --watch",
-    "codex:daemon": "node scripts/codex-injector.mjs --daemon --open",
+    "codex": "node scripts/codex-injector.mjs --source-log --launch --watch --open --port 9231",
+    "codex:inject": "node scripts/codex-injector.mjs --source-log --watch",
+    "codex:daemon": "node scripts/codex-injector.mjs --source-log --daemon --open",
     "codex:refresh": "node scripts/codex-injector.mjs --refresh",
+    "codex:observe": "node scripts/codex-debug-observe.mjs",
+    "source-launcher:install": "npm run build:web && node scripts/install-source-launcher.mjs",
     "app:prepare": "npm run build:web && node scripts/prepare-tauri-app.mjs",
     "app:dev": "npm run app:prepare && tauri dev",
     "app:build": "npm run app:prepare -- --target universal-apple-darwin && CI=true tauri build --target universal-apple-darwin --bundles app,dmg --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",

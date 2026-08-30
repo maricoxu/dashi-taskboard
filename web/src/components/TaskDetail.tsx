@@ -93,7 +93,7 @@ import {
 } from "./IssueRelations";
 import { TaskPropertyPicker } from "./TaskPropertyPicker";
 import { buildIssueUrl } from "../issueRoute";
-import { postEmbeddedHostMessage } from "../embeddedHost.mjs";
+import { isEmbeddedHost, postEmbeddedHostMessage } from "../embeddedHost.mjs";
 import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
 import copyLinkIcon from "../assets/figma-taskboard/copy-link.svg";
 import { DescriptionDocument } from "./DescriptionDocument";
@@ -177,8 +177,7 @@ function resizeTextarea(element: HTMLTextAreaElement | null) {
 }
 
 async function downloadAttachmentFile(attachment: Attachment) {
-  const host = new URL(document.baseURI).searchParams.get("host");
-  if (host === "codex" && window.parent !== window) {
+  if (isEmbeddedHost()) {
     postEmbeddedHostMessage({
       type: "taskboard:open-attachment",
       payload: {

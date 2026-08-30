@@ -2,13 +2,23 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { chmod, mkdir, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import {
+  chmodSync,
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  mkdirSync,
+  openSync,
+  writeSync,
+} from "node:fs";
+import { chmod, mkdir, readdir, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { createInterface } from "node:readline";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { format } from "node:util";
+import WebSocket from "ws";
 
 import { resolvePort } from "../server/app.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
@@ -34,6 +44,110 @@ import {
 const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
+const sourceLogEnabled = process.argv.includes("--source-log")
+  || process.env.CODEX_TASKBOARD_SOURCE_LOG === "1";
+if (sourceLogEnabled) process.env.CODEX_TASKBOARD_SOURCE_LOG = "1";
+const sourceLogFile = path.resolve(
+  process.env.CODEX_TASKBOARD_LOG_FILE
+    || (process.platform === "darwin"
+      ? path.join(os.homedir(), "Library", "Logs", "Codex Taskboard", "codex-taskboard-source.log")
+      : process.platform === "win32"
+        ? path.join(
+          process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
+          "Codex Taskboard",
+          "Logs",
+          "codex-taskboard-source.log",
+        )
+        : path.join(
+          process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
+          "Codex Taskboard",
+          "codex-taskboard-source.log",
+        )),
+);
+let sourceLogFd = null;
+const sourceLogBuffers = { stdout: "", stderr: "" };
+
+function sourceLogTimestamp() {
+  const now = new Date();
+  const pad = (value, width = 2) => String(value).padStart(width, "0");
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+    + `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`
+    + `${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`;
+}
+
+function redactSourceLogText(text) {
+  return text
+    .replace(
+      /(https?:\/\/127\.0\.0\.1:\d+)\/[a-f0-9-]{16,128}(?=\/|\?|["'\s]|$)/gi,
+      "$1/<redacted>",
+    )
+    .replace(
+      /(CODEX_TASKBOARD_INSTANCE_(?:TOKEN|SECRET)\s*[=:]\s*)[^\s"']+/gi,
+      "$1<redacted>",
+    );
+}
+
+function sourceLogWrite(text) {
+  if (sourceLogFd === null) return;
+  try {
+    writeSync(sourceLogFd, Buffer.from(redactSourceLogText(text), "utf8"));
+  } catch {}
+}
+
+function sourceLogWriteChunk(streamName, chunk) {
+  if (sourceLogFd === null) return;
+  sourceLogBuffers[streamName] += chunk;
+  let newlineIndex = sourceLogBuffers[streamName].indexOf("\n");
+  while (newlineIndex >= 0) {
+    const line = sourceLogBuffers[streamName].slice(0, newlineIndex + 1);
+    sourceLogBuffers[streamName] = sourceLogBuffers[streamName].slice(newlineIndex + 1);
+    sourceLogWrite(`[${sourceLogTimestamp()}] ${line}`);
+    newlineIndex = sourceLogBuffers[streamName].indexOf("\n");
+  }
+}
+
+function sourceLogFlush() {
+  if (sourceLogFd === null) return;
+  for (const streamName of Object.keys(sourceLogBuffers)) {
+    if (!sourceLogBuffers[streamName]) continue;
+    sourceLogWrite(`[${sourceLogTimestamp()}] ${sourceLogBuffers[streamName]}`);
+    sourceLogBuffers[streamName] = "";
+  }
+}
+
+function initializeSourceLog() {
+  if (!sourceLogEnabled) return;
+  try {
+    mkdirSync(path.dirname(sourceLogFile), { recursive: true, mode: 0o700 });
+    sourceLogFd = openSync(sourceLogFile, "a", 0o600);
+    chmodSync(sourceLogFile, 0o600);
+  } catch (error) {
+    console.error(`Unable to open Codex Taskboard source log: ${error.message}`);
+    return;
+  }
+  const originalLog = console.log.bind(console);
+  const originalError = console.error.bind(console);
+  console.log = (...args) => {
+    originalLog(...args);
+    sourceLogWrite(`[${sourceLogTimestamp()}] ${format(...args)}\n`);
+  };
+  console.error = (...args) => {
+    originalError(...args);
+    sourceLogWrite(`[${sourceLogTimestamp()}] ${format(...args)}\n`);
+  };
+  sourceLogWrite(`[${sourceLogTimestamp()}] source launcher started (pid=${process.pid})\n`);
+  process.once("exit", () => {
+    sourceLogFlush();
+    sourceLogWrite(`[${sourceLogTimestamp()}] source launcher stopped\n`);
+    try { closeSync(sourceLogFd); } catch {}
+  });
+}
+
+initializeSourceLog();
+
 const independentCodexProfilePath = process.env.CODEX_TASKBOARD_CODEX_PROFILE
   ? path.resolve(process.env.CODEX_TASKBOARD_CODEX_PROFILE)
   : process.platform === "linux"
@@ -77,6 +191,7 @@ const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardBaseUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}`;
 const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
+let lastTaskboardHealthFailure = null;
 const hostBindingName = "__codexTaskboardHostV1";
 const hostRequestMessage = "__codexTaskboardHostRequestV1";
 const hostResponseMessage = "__codexTaskboardHostResponseV1";
@@ -120,6 +235,7 @@ function parseArgs(argv) {
     attachExisting: false,
     startupToken: null,
     daemon: false,
+    sourceLog: false,
     screenshot: null,
     appPath: process.platform === "linux" ? "/usr/bin/chatgpt" : "/Applications/ChatGPT.app",
   };
@@ -140,6 +256,7 @@ function parseArgs(argv) {
       }
     }
     else if (arg === "--daemon") options.daemon = true;
+    else if (arg === "--source-log") options.sourceLog = true;
     else if (arg === "--port") {
       options.port = Number(argv[++index]);
       options.portExplicit = true;
@@ -182,16 +299,32 @@ async function isTaskboardReachable() {
       headers: { "x-codex-taskboard-challenge": challenge },
       signal: AbortSignal.timeout(1_500),
     });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      lastTaskboardHealthFailure = { kind: "http", status: response.status };
+      return false;
+    }
     const body = await response.json();
     const proof = createHmac("sha256", taskboardInstanceSecret)
       .update(challenge)
       .digest("hex");
-    return body?.status === "ok"
+    const reachable = body?.status === "ok"
       && body.product === "codex-taskboard"
       && body.version === taskboardVersion
       && body.proof === proof;
+    if (!reachable) {
+      lastTaskboardHealthFailure = {
+        kind: "identity",
+        status: body?.status ?? null,
+        product: body?.product ?? null,
+        version: body?.version ?? null,
+        hasProof: typeof body?.proof === "string",
+      };
+      return false;
+    }
+    lastTaskboardHealthFailure = null;
+    return true;
   } catch {
+    lastTaskboardHealthFailure = { kind: "transport" };
     return false;
   }
 }
@@ -213,21 +346,42 @@ async function waitUntilTaskboardReachable(timeoutMs) {
     if (await isTaskboardReachable()) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Timed out waiting for authenticated ${taskboardHealthUrl}`);
+  const detail = lastTaskboardHealthFailure
+    ? `; last check=${JSON.stringify(lastTaskboardHealthFailure)}`
+    : "";
+  throw new Error(`Timed out waiting for authenticated ${taskboardHealthUrl}${detail}`);
 }
 
 function startTaskboard({ detached, onCodexAppServerRequest }) {
   const baseStdio = taskboardListenFd === null
-    ? Array(3).fill(detached ? "ignore" : "inherit")
+    ? ["ignore", ...(detached ? ["ignore", "ignore"] : ["pipe", "pipe"])]
     : Array.from(
       { length: taskboardListenFd + 1 },
-      (_, fd) => (fd === taskboardListenFd ? "inherit" : (fd < 3 && !detached ? "inherit" : "ignore")),
+      (_, fd) => (
+        fd === taskboardListenFd
+          ? "inherit"
+          : fd === 0
+            ? "ignore"
+            : fd < 3 && !detached
+              ? "pipe"
+              : "ignore"
+      ),
     );
   const child = spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
     cwd: projectRoot,
     detached,
     stdio: [...baseStdio, "ipc"],
   });
+  if (!detached) {
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      sourceLogWriteChunk("stdout", chunk.toString());
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      sourceLogWriteChunk("stderr", chunk.toString());
+    });
+  }
   child.on("message", (message) => {
     if (message?.type !== "taskboard:codex-app-server-request") return;
     void Promise.resolve(onCodexAppServerRequest(message)).then(
@@ -632,6 +786,51 @@ async function codexTargets(port) {
   });
 }
 
+function refreshedTaskboardBrowserUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.origin !== taskboardOrigin) return null;
+  const token = url.pathname.split("/").filter(Boolean)[0] || "";
+  if (!/^[a-z0-9-]{16,128}$/i.test(token) || token === taskboardInstanceToken) return null;
+  const nextUrl = new URL(taskboardPageUrl);
+  nextUrl.search = url.search;
+  if (!nextUrl.searchParams.has("host")) nextUrl.searchParams.set("host", "codex");
+  nextUrl.hash = url.hash;
+  return nextUrl.href;
+}
+
+async function refreshTaskboardBrowserTabs(port) {
+  let targets;
+  try {
+    targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+  } catch {
+    return 0;
+  }
+  let refreshed = 0;
+  for (const target of targets) {
+    if (target.type !== "page" || !target.webSocketDebuggerUrl) continue;
+    const nextUrl = refreshedTaskboardBrowserUrl(target.url);
+    if (!nextUrl) continue;
+    const cdp = new CdpConnection(
+      validatedLoopbackCdpWebSocketUrl(target.webSocketDebuggerUrl, port),
+    );
+    try {
+      await cdp.open();
+      await cdp.send("Page.navigate", { url: nextUrl });
+      refreshed += 1;
+    } catch {}
+    cdp.close();
+  }
+  if (refreshed > 0) {
+    console.log(JSON.stringify({ taskboardTabsRefreshed: refreshed }));
+  }
+  return refreshed;
+}
+
 function isCodexTarget(target) {
   return (
       target.type === "page" &&
@@ -893,7 +1092,52 @@ async function verifiedTaskboardDocument(frameCapability) {
   const html = await response.text();
   const head = "<head>";
   if (!html.includes(head)) throw new Error("Taskboard document has no head element");
-  return html.replace(
+  const assetsDirectory = path.join(projectRoot, "dist", "web", "assets");
+  const rawAssetUrls = new Map();
+  for (const filename of await readdir(assetsDirectory)) {
+    if (!/\.(?:js|css)$/i.test(filename)) continue;
+    const content = await readFile(path.join(assetsDirectory, filename));
+    const mimeType = filename.endsWith(".css") ? "text/css" : "text/javascript";
+    rawAssetUrls.set(filename, `data:${mimeType};base64,${content.toString("base64")}`);
+  }
+  const publicAssetUrls = new Map();
+  for (const filename of ["codex-agent-logo.png", "codex-app-icon.png", "favicon.svg"]) {
+    try {
+      const content = await readFile(path.join(projectRoot, "dist", "web", filename));
+      const mimeType = filename.endsWith(".svg") ? "image/svg+xml" : "image/png";
+      publicAssetUrls.set(filename, `data:${mimeType};base64,${content.toString("base64")}`);
+    } catch {}
+  }
+  const assetUrls = new Map(rawAssetUrls);
+  for (const [filename, url] of rawAssetUrls) {
+    if (!filename.endsWith(".js")) continue;
+    const source = Buffer.from(url.slice(url.indexOf(",") + 1), "base64").toString("utf8");
+    let rewritten = source;
+    for (const [dependency, dependencyUrl] of rawAssetUrls) {
+      rewritten = rewritten.replaceAll(`./${dependency}`, dependencyUrl);
+    }
+    for (const [filename, assetUrl] of publicAssetUrls) {
+      rewritten = rewritten.replaceAll(filename, assetUrl);
+    }
+    assetUrls.set(filename, `data:text/javascript;base64,${Buffer.from(rewritten).toString("base64")}`);
+  }
+  const mainScript = html.match(/<script[^>]+type="module"[^>]+src="\.\/assets\/([^"]+)"[^>]*><\/script>/i)?.[1];
+  if (!mainScript || !assetUrls.has(mainScript)) throw new Error("Taskboard document main script is missing");
+  const mainScriptUrl = assetUrls.get(mainScript);
+  if (!mainScriptUrl?.startsWith("data:text/javascript;base64,")) {
+    throw new Error("Taskboard document main script could not be embedded");
+  }
+  const stylesheet = html.match(/<link[^>]+rel="stylesheet"[^>]+href="\.\/assets\/([^"]+)"[^>]*>/i)?.[1];
+  const inlinedHtml = html
+    .replace(/<link[^>]+rel="modulepreload"[^>]+>/gi, "")
+    .replace(/<link[^>]+rel="icon"[^>]*>/gi, "")
+    .replace(/<script[^>]+type="module"[^>]+src="\.\/assets\/([^"]+)"[^>]*><\/script>/i,
+      `<script type="module" src=${JSON.stringify(mainScriptUrl)}></script>`)
+    .replace(/<link[^>]+rel="stylesheet"[^>]+href="\.\/assets\/([^"]+)"[^>]*>/i,
+      stylesheet && assetUrls.has(stylesheet)
+        ? `<style>${Buffer.from(assetUrls.get(stylesheet).slice(assetUrls.get(stylesheet).indexOf(",") + 1), "base64").toString("utf8")}</style>`
+        : "");
+  return inlinedHtml.replace(
     head,
     `${head}<base href=${JSON.stringify(taskboardPageUrl)}><script>globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__=${JSON.stringify(frameCapability)};</script>`,
   );
@@ -981,6 +1225,59 @@ async function openAttachment(request) {
   await writeFile(attachmentPath, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
   await revealAttachmentInFinder(attachmentPath, directory);
   return { opened: true };
+}
+
+async function proxyTaskboardHttpRequest(request) {
+  const expected = new URL(taskboardBaseUrl);
+  let target;
+  try {
+    target = new URL(request.url);
+  } catch {
+    throw new Error("Taskboard bridge URL is invalid");
+  }
+  const apiPrefix = `${expected.pathname.replace(/\/$/, "")}/api/`;
+  if (
+    target.origin !== expected.origin
+    || !target.pathname.startsWith(apiPrefix)
+    || target.pathname.includes("\0")
+  ) {
+    throw new Error("Taskboard bridge only permits this instance's /api routes");
+  }
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers ?? {})) {
+    const normalized = name.toLowerCase();
+    if (["host", "origin", "connection", "content-length"].includes(normalized)) continue;
+    headers.set(name, value);
+  }
+  let body;
+  if (request.body?.kind === "text") body = request.body.value;
+  else if (request.body?.kind === "base64") body = Buffer.from(request.body.value, "base64");
+  const response = await fetch(target, {
+    method: request.method,
+    headers,
+    ...(body === undefined ? {} : { body }),
+    cache: "no-store",
+  });
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > 8 * 1024 * 1024) {
+    throw new Error("Taskboard bridge response is too large");
+  }
+  console.log(JSON.stringify({
+    taskboardBridge: {
+      requestId: request.requestId,
+      method: request.method,
+      pathname: target.pathname,
+      status: response.status,
+      bytes: bytes.length,
+    },
+  }));
+  return {
+    requestId: request.requestId,
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
+    bodyBase64: bytes.toString("base64"),
+  };
 }
 
 async function requestCodexAutomationViaCdp(cdp, executionContextId, method, params) {
@@ -2240,15 +2537,22 @@ function installTaskboardHostBinding(
     if (params.name !== hostBindingName) return;
     await handleHostBindingPayload(params, {
       isAuthorizedContext: (executionContextId) => executionContextId === activeContextId,
+      onAcceptedRequest: (action) => console.log(JSON.stringify({ taskboardHostRequest: action })),
       parseAutomationRequest: parseTaskboardAutomationHostRequest,
       ensure: () => supervisor.ensure({ force: true }),
-      loadFrame: (request) => loadTaskboardFrameViaCdp(
-        cdp,
-        request.frameName,
-        request.frameCapability,
-      ),
+      loadFrame: async (request) => {
+        console.log(JSON.stringify({ taskboardFrameLoadStarted: true }));
+        const result = await loadTaskboardFrameViaCdp(
+          cdp,
+          request.frameName,
+          request.frameCapability,
+        );
+        console.log(JSON.stringify({ taskboardFrameLoadFinished: true }));
+        return result;
+      },
       openExternal: openExternalUrl,
       openAttachment,
+      httpRequest: proxyTaskboardHttpRequest,
       runAutomation: (request) => (
         (async () => {
           const rpc = (method, body) => requestCodexAutomationViaCdp(
@@ -2501,6 +2805,23 @@ async function injectTarget(
         });
       }
       const shouldRemainOpen = shouldOpen || reconciled.shouldRemainOpen;
+      // An attach can inherit a panel whose iframe timed out before this
+      // injector connected. The source hash still matches in that case, so
+      // reconciliation alone would keep waiting on the dead about:blank
+      // frame forever. Re-enter the normal open flow to create a fresh
+      // challenge and let the host install the document again.
+      if (
+        shouldRemainOpen
+        && !reconciled.replaced
+        && currentStatus.pageVisible === true
+        && currentStatus.frameReady !== true
+      ) {
+        console.log(JSON.stringify({ taskboardFrameRecovery: "reopen-unready" }));
+        await cdp.send("Runtime.evaluate", {
+          expression: "window.__codexTaskboardInjection__?.open()",
+          returnByValue: true,
+        });
+      }
       const status = await waitForInjectionStatus(
         cdp,
         shouldRemainOpen,
@@ -2602,24 +2923,29 @@ async function injectAll(
   for (const target of targets) {
     if (injectedTargets.has(target.id)) continue;
     const firstTarget = injectedTargets.size === 0 && results.length === 0;
-    const { result, connection } = await injectTarget(
-      runtime,
-      target,
-      source,
-      sourceHash,
-      shouldOpen && firstTarget,
-      firstTarget ? screenshotPath : null,
-      keepAlive,
-      supervisor,
-      attachExisting,
-      startupToken,
-      onCodexAppServerNotification,
-      onCodexAppServerReady,
-      onCodexAppServerUnavailable,
-    );
-    if (connection) injectedTargets.set(target.id, connection);
-    results.push({ targetId: target.id, title: target.title, url: target.url, ...result });
+    try {
+      const { result, connection } = await injectTarget(
+        runtime,
+        target,
+        source,
+        sourceHash,
+        shouldOpen && firstTarget,
+        firstTarget ? screenshotPath : null,
+        keepAlive,
+        supervisor,
+        attachExisting,
+        startupToken,
+        onCodexAppServerNotification,
+        onCodexAppServerReady,
+        onCodexAppServerUnavailable,
+      );
+      if (connection) injectedTargets.set(target.id, connection);
+      results.push({ targetId: target.id, title: target.title, url: target.url, ...result });
+    } catch (error) {
+      console.error(`Codex renderer ${target.id} skipped: ${error.message}`);
+    }
   }
+  if (results.length === 0 && !keepAlive) throw new Error("No Codex renderer target accepted the injection");
   return results;
 }
 
@@ -2664,6 +2990,24 @@ async function main() {
   options.startupToken ??= taskboardInstanceToken;
   process.env.CODEX_EXECUTABLE = await resolveRunnableCodexExecutable(options.appPath);
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
+
+  // A second manual `codex:inject --watch` against the same repository and
+  // CDP port would create a competing host capability and repeatedly replace
+  // the same iframe. Reuse the resident process instead; --open still keeps
+  // the command useful as a one-shot "show the panel" action.
+  if (options.watch && !options.launch && !options.cdpPipe) {
+    const [residentPid] = residentInjectorPids(options.port);
+    if (residentPid) {
+      if (options.open) {
+        try { process.kill(residentPid, "SIGUSR2"); } catch {}
+      }
+      console.log(JSON.stringify({
+        reusedInjectorPid: residentPid,
+        openSignaled: options.open,
+      }));
+      return;
+    }
+  }
 
   if (options.daemon) {
     let port = options.port;
@@ -2780,7 +3124,7 @@ async function main() {
         throw new Error("Taskboard injection is not ready");
       }
       await connection.send("Page.bringToFront");
-      activateCodexApp(codexAppPid);
+      if (codexAppPid) activateCodexApp(codexAppPid);
       openedRequestGeneration = Math.max(openedRequestGeneration, generation);
       return true;
     } catch (error) {
@@ -2862,6 +3206,7 @@ async function main() {
   const supervisor = createTaskboardSupervisor({
     detached,
     isReachable: isTaskboardReachable,
+    getReachabilityFailure: () => lastTaskboardHealthFailure,
     waitUntilReachable: waitUntilTaskboardReachable,
     start: () => {
       const child = startTaskboard({
@@ -2879,6 +3224,11 @@ async function main() {
     },
     onUnexpectedExit: (code, signal) => {
       console.error(`Taskboard exited (${signal || code}); it will be restarted automatically.`);
+    },
+    onForcedKill: ({ pid, signal, terminateTimeoutMs }) => {
+      console.error(JSON.stringify({
+        taskboardForcedKill: { pid, signal, reason: "SIGTERM timeout", terminateTimeoutMs },
+      }));
     },
   });
 
@@ -3079,6 +3429,9 @@ async function main() {
       cdpRuntime = tcpCdpRuntime(options.port);
     }
     if (stopping) return;
+    if (!options.cdpPipe && cdpRuntime) {
+      await refreshTaskboardBrowserTabs(options.port);
+    }
 
     const { source, sourceHash } = await currentInjectionSource();
     if (stopping) return;
@@ -3111,12 +3464,15 @@ async function main() {
     if (firstResults.length > 0) {
       if (shouldOpenFirstTarget) {
         openedRequestGeneration = Math.max(openedRequestGeneration, firstOpenGeneration);
-        activateCodexApp(codexAppPid);
+        if (codexAppPid) activateCodexApp(codexAppPid);
       }
       console.log(JSON.stringify({ injected: firstResults }, null, 2));
     }
     if (hasOpenPending()) {
       await requestTaskboardOpen();
+    }
+    if (!options.cdpPipe && cdpRuntime) {
+      await refreshTaskboardBrowserTabs(options.port);
     }
     if (!options.watch) {
       if (options.cdpPipe) codexProcess?.unref();
@@ -3131,7 +3487,10 @@ async function main() {
       if (stopping) break;
       try {
         const service = await supervisor.ensure();
-        if (service.restarted && !stopping) await publishRuntime();
+        if (service.restarted && !stopping) {
+          await publishRuntime();
+          if (!options.cdpPipe && cdpRuntime) await refreshTaskboardBrowserTabs(options.port);
+        }
       } catch (error) {
         console.error(`Waiting for Taskboard service: ${error.message}`);
       }
@@ -3187,6 +3546,9 @@ async function main() {
         }
         if (hasOpenPending()) {
           await requestTaskboardOpen();
+        }
+        if (!options.cdpPipe && cdpRuntime) {
+          await refreshTaskboardBrowserTabs(options.port);
         }
       } catch (error) {
         if (stopping) break;

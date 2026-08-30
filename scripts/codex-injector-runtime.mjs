@@ -46,6 +46,38 @@ function parseHostRequest(payload, parseAutomationRequest) {
     && request.filename !== ".."
     && !/[\u0000-\u001f\u007f/\\]/.test(request.filename)
   ) return { id, request, error: null };
+  if (
+    request.action === "http-request"
+    && typeof request.requestId === "string"
+    && /^[a-z0-9-]{1,100}$/i.test(request.requestId)
+    && typeof request.url === "string"
+    && request.url.length <= 4_096
+    && typeof request.method === "string"
+    && ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(request.method.toUpperCase())
+    && request.headers
+    && typeof request.headers === "object"
+    && !Array.isArray(request.headers)
+    && Object.keys(request.headers).length <= 32
+    && Object.entries(request.headers).every(([key, value]) => (
+      /^[A-Za-z0-9-]{1,100}$/.test(key)
+      && typeof value === "string"
+      && value.length <= 8_192
+    ))
+    && (
+      request.body === undefined
+      || (
+        request.body
+        && typeof request.body === "object"
+        && (request.body.kind === "text" || request.body.kind === "base64")
+        && typeof request.body.value === "string"
+        && request.body.value.length <= 3_000_000
+      )
+    )
+  ) return {
+    id,
+    request: { ...request, method: request.method.toUpperCase() },
+    error: null,
+  };
   if (request.action === "automation") {
     const parsed = parseAutomationRequest(request);
     return parsed
@@ -110,6 +142,8 @@ export async function handleHostBindingPayload(params, handlers) {
     return { responded: true, accepted: false };
   }
 
+  handlers.onAcceptedRequest?.(parsed.request.action);
+
   try {
     let result;
     if (parsed.request.action === "ensure") {
@@ -122,6 +156,8 @@ export async function handleHostBindingPayload(params, handlers) {
       result = await handlers.openAttachment(parsed.request);
     } else if (parsed.request.action === "automation") {
       result = await handlers.runAutomation(parsed.request, params.executionContextId);
+    } else if (parsed.request.action === "http-request") {
+      result = await handlers.httpRequest(parsed.request, params.executionContextId);
     } else {
       result = await handlers.startConversation(parsed.request, params.executionContextId);
     }

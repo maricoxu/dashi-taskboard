@@ -23,13 +23,14 @@ function waitForExit(child, timeoutMs) {
 
 export async function terminateManagedChild(
   child,
-  { terminateTimeoutMs = 3_000, killTimeoutMs = 1_000 } = {},
+  { terminateTimeoutMs = 3_000, killTimeoutMs = 1_000, onForcedKill = () => {} } = {},
 ) {
   if (!isRunning(child)) return;
   const terminated = waitForExit(child, terminateTimeoutMs);
   child.kill("SIGTERM");
   if (await terminated) return;
 
+  onForcedKill({ pid: child.pid, signal: "SIGKILL", terminateTimeoutMs });
   if (isRunning(child)) child.kill("SIGKILL");
   if (!(await waitForExit(child, killTimeoutMs)) && isRunning(child)) {
     throw new Error("Taskboard process did not exit after SIGKILL");
@@ -39,10 +40,12 @@ export async function terminateManagedChild(
 export function createTaskboardSupervisor({
   detached,
   isReachable,
+  getReachabilityFailure = () => null,
   waitUntilReachable,
   start,
   onProcessError = () => {},
   onUnexpectedExit = () => {},
+  onForcedKill = () => {},
 }) {
   let child = null;
   let ensureInFlight = null;
@@ -53,6 +56,12 @@ export function createTaskboardSupervisor({
     const reachable = await isReachable();
     if (stopping) throw new Error("Taskboard supervisor is stopping");
     if (reachable) return { status: "ok", restarted: false };
+    const reachabilityFailure = getReachabilityFailure();
+    if (reachabilityFailure?.kind === "identity") {
+      throw new Error(
+        "Taskboard service identity conflict: another instance is using this port",
+      );
+    }
     if (ensureInFlight) return ensureInFlight;
     if (!force && Date.now() < retryAfter) {
       throw new Error("Taskboard restart is waiting before its next attempt");
@@ -65,7 +74,7 @@ export function createTaskboardSupervisor({
           await waitUntilReachable(3_000);
           return { status: "ok", restarted: false };
         } catch (_) {}
-        await terminateManagedChild(managedChild);
+        await terminateManagedChild(managedChild, { onForcedKill });
         if (child === managedChild) child = null;
       }
 
@@ -101,7 +110,7 @@ export function createTaskboardSupervisor({
   async function stop() {
     stopping = true;
     const managedChild = child;
-    await terminateManagedChild(managedChild);
+    await terminateManagedChild(managedChild, { onForcedKill });
     if (child === managedChild) child = null;
   }
 

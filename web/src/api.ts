@@ -30,6 +30,7 @@ import type {
   TaskDraft,
   TaskStatus,
 } from "./types";
+import { isEmbeddedHost, requestEmbeddedHostHttp } from "./embeddedHost.mjs";
 
 const DEFAULT_USER_ACTOR: ActorIdentity = {
   type: "user",
@@ -71,6 +72,49 @@ export class ApiError extends Error {
   }
 }
 
+async function encodeEmbeddedRequestBody(body: BodyInit | null | undefined) {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === "string") return { kind: "text", value: body };
+  if (body instanceof URLSearchParams) return { kind: "text", value: body.toString() };
+  if (body instanceof Blob) {
+    const bytes = new Uint8Array(await body.arrayBuffer());
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return { kind: "base64", value: btoa(binary) };
+  }
+  if (body instanceof ArrayBuffer) {
+    const bytes = new Uint8Array(body);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return { kind: "base64", value: btoa(binary) };
+  }
+  throw new TypeError("Unsupported embedded Taskboard request body");
+}
+
+async function embeddedHostFetch(url: string, init: RequestInit, headers: Headers) {
+  if (init.signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+  const bridge = requestEmbeddedHostHttp({
+    url,
+    method: (init.method ?? "GET").toUpperCase(),
+    headers: Object.fromEntries(headers.entries()),
+    body: await encodeEmbeddedRequestBody(init.body),
+  });
+  if (!bridge) return null;
+  const result = await bridge;
+  const binary = atob(result.bodyBase64 || "");
+  const body = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) body[index] = binary.charCodeAt(index);
+  return new Response([204, 205, 304].includes(result.status) ? undefined : body, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
+  });
+}
+
 export function resolveTaskboardUrl(path: string): string {
   return new URL(path.replace(/^\//, ""), document.baseURI).href;
 }
@@ -97,7 +141,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   for (let attempt = 0; ; attempt += 1) {
     try {
-      response = await fetch(resolveTaskboardUrl(path), { ...init, headers });
+      const url = resolveTaskboardUrl(path);
+      response = await embeddedHostFetch(url, { ...init, headers }, headers)
+        || await fetch(url, { ...init, headers });
       break;
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
@@ -434,6 +480,10 @@ export function subscribeAiChatThread(
   onHint: (type: "ai.event" | "ai.run") => void,
   onError?: () => void,
 ): () => void {
+  if (isEmbeddedHost()) {
+    const timer = window.setInterval(() => onHint("ai.event"), 1_500);
+    return () => window.clearInterval(timer);
+  }
   const source = new EventSource(
     resolveTaskboardUrl(`/api/local/ai/threads/${encodeURIComponent(threadId)}/events`),
   );

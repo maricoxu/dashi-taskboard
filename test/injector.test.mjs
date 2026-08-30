@@ -26,7 +26,7 @@ test("the resident injector authenticates its launcher-managed Taskboard service
   assert.match(source, /Page\.setDocumentContent/);
   assert.match(runtimeSource, /request\.action === "load-frame"/);
   assert.match(supervisorSource, /ensureInFlight/);
-  assert.match(supervisorSource, /await terminateManagedChild\(managedChild\)/);
+  assert.match(supervisorSource, /await terminateManagedChild\(managedChild,/);
   assert.match(source, /await supervisor\.ensure\(\)/);
   assert.match(source, /it will be restarted automatically/);
   assert.match(source, /AbortSignal\.timeout\(1_500\)/);
@@ -86,6 +86,10 @@ test("the CDP bridge accepts service ensure and native task conversation start a
   assert.match(source, /if \(keepAlive\) await hostBridge\.install\(\)/);
   assert.match(source, /hostBridge\.publishHeartbeat/);
   assert.match(source, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
+  assert.match(source, /taskboardFrameRecovery: "reopen-unready"/);
+  assert.match(source, /currentStatus\.frameReady !== true/);
+  assert.match(source, /reusedInjectorPid/);
+  assert.match(source, /process\.kill\(residentPid, "SIGUSR2"\)/);
 });
 
 test("the CDP bridge exposes only the fixed Taskboard automation operations", () => {

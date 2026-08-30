@@ -9,6 +9,13 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL("../dist/web", import.meta.url)),
     emptyOutDir: true,
+    // The Codex iframe has an opaque origin, so its embedded bundle must not
+    // depend on later HTTP requests for dynamic chunks.
+    rollupOptions: {
+      output: {
+        codeSplitting: false,
+      },
+    },
   },
   server: {
     host: "127.0.0.1",
