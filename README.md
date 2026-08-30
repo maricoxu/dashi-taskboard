@@ -63,6 +63,8 @@ The desktop app keeps this same directory synchronized with its bundled Skill. T
 
 ## Embed in Codex
 
+For renderer crash diagnosis, log locations, and the single-injector restart workflow, see [Codex Renderer Crash Diagnostics](docs/renderer-crash-diagnostics.md).
+
 ### Manual: use a dedicated CDP port
 
 Keep the existing Codex window open. From the Taskboard repository, start a second Codex instance with a dedicated CDP port:

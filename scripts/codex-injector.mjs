@@ -372,6 +372,33 @@ function startTaskboard({ detached, onCodexAppServerRequest }) {
     detached,
     stdio: [...baseStdio, "ipc"],
   });
+  console.log(JSON.stringify({
+    taskboardProcess: {
+      event: "started",
+      pid: child.pid,
+      detached,
+      cwd: projectRoot,
+    },
+  }));
+  child.on("error", (error) => {
+    console.error(JSON.stringify({
+      taskboardProcess: {
+        event: "error",
+        pid: child.pid,
+        message: error.message,
+      },
+    }));
+  });
+  child.on("exit", (code, signal) => {
+    console.error(JSON.stringify({
+      taskboardProcess: {
+        event: "exited",
+        pid: child.pid,
+        code,
+        signal,
+      },
+    }));
+  });
   if (!detached) {
     child.stdout?.on("data", (chunk) => {
       process.stdout.write(chunk);
@@ -668,6 +695,8 @@ class CdpConnection {
     this.eventWaiters = new Map();
     this.eventHandlers = new Map();
     this.closed = false;
+    this.onClosed = null;
+    this.onSocketError = null;
   }
 
   async open() {
@@ -681,17 +710,27 @@ class CdpConnection {
         cleanup();
         resolve();
       };
-      const handleFailure = () => {
+      const handleFailure = (event) => {
         cleanup();
         this.closed = true;
-        reject(new Error("CDP WebSocket connection failed"));
+        reject(new Error(
+          event?.type === "close"
+            ? `CDP WebSocket closed during open (code=${event.code ?? "unknown"})`
+            : "CDP WebSocket connection failed",
+        ));
       };
       this.socket.addEventListener("open", handleOpen, { once: true });
       this.socket.addEventListener("error", handleFailure, { once: true });
       this.socket.addEventListener("close", handleFailure, { once: true });
     });
     this.socket.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data));
+      let message;
+      try {
+        message = JSON.parse(String(event.data));
+      } catch (error) {
+        this.onSocketError?.({ message: `Invalid CDP message: ${error.message}` });
+        return;
+      }
       if (!message.id) {
         const waiters = this.eventWaiters.get(message.method) || [];
         this.eventWaiters.delete(message.method);
@@ -714,7 +753,13 @@ class CdpConnection {
       if (message.error) pending.reject(new Error(message.error.message));
       else pending.resolve(message.result);
     });
-    this.socket.addEventListener("close", () => {
+    this.socket.addEventListener("error", (event) => {
+      this.onSocketError?.({
+        message: event?.error?.message || event?.message || "CDP WebSocket error",
+      });
+    });
+    this.socket.addEventListener("close", (event) => {
+      const intentional = this.closed;
       this.closed = true;
       const error = new Error("CDP WebSocket closed");
       this.pending.forEach((pending) => pending.reject(error));
@@ -722,6 +767,12 @@ class CdpConnection {
       this.eventWaiters.forEach((waiters) => waiters.forEach((waiter) => waiter.reject(error)));
       this.eventWaiters.clear();
       this.eventHandlers.clear();
+      this.onClosed?.({
+        code: event?.code ?? null,
+        reason: event?.reason || "",
+        wasClean: event?.wasClean ?? null,
+        intentional,
+      });
     });
   }
 
@@ -924,7 +975,7 @@ function startResidentInjector(
 ) {
   const [existingPid] = residentInjectorPids(port);
   if (existingPid) return { pid: existingPid, started: false };
-  const args = [injectorPath, "--watch", "--port", String(port)];
+  const args = [injectorPath, "--source-log", "--watch", "--port", String(port)];
   if (shouldOpen) args.push("--open");
   if (attachExisting) args.push("--attach-existing");
   if (startupToken) args.push("--startup-token", startupToken);
@@ -2586,7 +2637,14 @@ function installTaskboardHostBinding(
     });
   });
 
+  const resetActiveContext = (params) => {
+    if (params?.executionContextId === activeContextId) activeContextId = null;
+  };
+  cdp.on("Runtime.executionContextDestroyed", resetActiveContext);
+  cdp.on("Runtime.executionContextsCleared", () => { activeContextId = null; });
+
   async function install() {
+    if (activeContextId !== null) return activeContextId;
     if (installInFlight) return installInFlight;
     installInFlight = (async () => {
       const { frameTree } = await cdp.send("Page.getFrameTree");
@@ -2649,33 +2707,90 @@ function installTaskboardHostBinding(
     }
   }
 
+  let heartbeatInFlight = null;
+  let heartbeatFailureCount = 0;
+  let heartbeatRetryAt = 0;
+
+  function heartbeatBackoffMs() {
+    return Math.min(30_000, 1_000 * (2 ** Math.min(heartbeatFailureCount, 5)));
+  }
+
   async function publishHeartbeat() {
+    if (heartbeatInFlight) return { status: "pending" };
+    if (Date.now() < heartbeatRetryAt) return { status: "backoff", retryAt: heartbeatRetryAt };
+
+    let timeoutObserved = false;
+    const operation = (async () => {
+      const executionContextId = await install();
+      await cdp.send("Runtime.evaluate", {
+        contextId: executionContextId,
+        expression: `window.postMessage({
+          type: ${JSON.stringify(hostHeartbeatMessage)},
+          capability: ${JSON.stringify(hostCapability)},
+          at: Date.now(),
+          startupToken: ${JSON.stringify(startupToken)}
+        }, window.location.origin)`,
+        returnByValue: true,
+      });
+    })();
+    heartbeatInFlight = operation;
+    operation.then(
+      () => {
+        if (heartbeatInFlight !== operation) return;
+        heartbeatInFlight = null;
+        if (heartbeatFailureCount > 0) {
+          console.log(JSON.stringify({
+            codexRenderer: {
+              event: "heartbeat-recovered",
+              targetId: cdp.diagnosticTargetId || null,
+            },
+          }));
+        }
+        heartbeatFailureCount = 0;
+        heartbeatRetryAt = 0;
+      },
+      (error) => {
+        if (heartbeatInFlight === operation) heartbeatInFlight = null;
+        if (!timeoutObserved) heartbeatFailureCount += 1;
+        heartbeatRetryAt = Date.now() + heartbeatBackoffMs();
+        console.error(JSON.stringify({
+          codexRenderer: {
+            event: "heartbeat-failed",
+            targetId: cdp.diagnosticTargetId || null,
+            message: error.message,
+            timedOut: timeoutObserved,
+            closedBeforeFailure: cdp.closed === true,
+            retryAt: heartbeatRetryAt,
+          },
+        }));
+      },
+    );
+
     let timeout;
-    try {
-      await Promise.race([
-        (async () => {
-          const executionContextId = await install();
-          await cdp.send("Runtime.evaluate", {
-            contextId: executionContextId,
-            expression: `window.postMessage({
-              type: ${JSON.stringify(hostHeartbeatMessage)},
-              capability: ${JSON.stringify(hostCapability)},
-              at: Date.now(),
-              startupToken: ${JSON.stringify(startupToken)}
-            }, window.location.origin)`,
-            returnByValue: true,
-          });
-        })(),
-        new Promise((_, reject) => {
-          timeout = setTimeout(() => {
-            cdp.close();
-            reject(new Error("Timed out publishing the Taskboard host heartbeat"));
-          }, 3_000);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timeout);
+    const result = await Promise.race([
+      operation.then(() => ({ status: "ok" }), (error) => ({ status: "failed", error })),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve({ status: "timeout" }), 3_000);
+        timeout.unref?.();
+      }),
+    ]);
+    clearTimeout(timeout);
+    if (result.status === "timeout") {
+      timeoutObserved = true;
+      heartbeatFailureCount += 1;
+      heartbeatRetryAt = Date.now() + heartbeatBackoffMs();
+      console.error(JSON.stringify({
+        codexRenderer: {
+          event: "heartbeat-timeout",
+          targetId: cdp.diagnosticTargetId || null,
+          retryAt: heartbeatRetryAt,
+          pendingOperation: true,
+        },
+      }));
     }
+    return result.status === "failed"
+      ? { status: result.status, message: result.error.message }
+      : result;
   }
 
   return { install, publishHeartbeat };
@@ -2758,6 +2873,54 @@ async function injectTarget(
   onCodexAppServerUnavailable,
 ) {
   const cdp = await runtime.connect(target);
+  cdp.diagnosticTargetId = target.id;
+  cdp.onSocketError = (detail) => {
+    console.error(JSON.stringify({
+      codexRenderer: {
+        event: "cdp-socket-error",
+        targetId: target.id,
+        ...detail,
+      },
+    }));
+  };
+  cdp.onClosed = (detail) => {
+    console.error(JSON.stringify({
+      codexRenderer: {
+        event: "cdp-closed",
+        targetId: target.id,
+        ...detail,
+      },
+    }));
+  };
+  cdp.on?.("Inspector.targetCrashed", (params) => {
+    console.error(JSON.stringify({
+      codexRenderer: {
+        event: "target-crashed",
+        targetId: target.id,
+        status: params?.status || null,
+        errorCode: params?.errorCode ?? null,
+      },
+    }));
+  });
+  cdp.on?.("Inspector.targetReloadedAfterCrash", () => {
+    console.error(JSON.stringify({
+      codexRenderer: {
+        event: "target-reloaded-after-crash",
+        targetId: target.id,
+      },
+    }));
+  });
+  cdp.on?.("Page.lifecycleEvent", (params) => {
+    if (params?.name !== "crashed") return;
+    console.error(JSON.stringify({
+      codexRenderer: {
+        event: "page-lifecycle-crashed",
+        targetId: target.id,
+        frameId: params.frameId || null,
+        loaderId: params.loaderId || null,
+      },
+    }));
+  });
   let retained = false;
   const hostBridge = keepAlive
     ? installTaskboardHostBinding(
@@ -2955,7 +3118,13 @@ async function currentInjectionSource() {
 window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = ${JSON.stringify(hostCapability)};
 window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(taskboardPageUrl)};
 ${userScript}`;
-  const sourceHash = createHash("sha256").update(runtimeSource).digest("hex");
+  // The capability is intentionally per injector process; it must not make
+  // the source hash unstable or refresh readiness can never be verified.
+  const hashRuntimeSource = runtimeSource.replace(
+    `window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = ${JSON.stringify(hostCapability)};`,
+    'window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = "<runtime-capability>";',
+  );
+  const sourceHash = createHash("sha256").update(hashRuntimeSource).digest("hex");
   return {
     sourceHash,
     source: `window[${JSON.stringify(injectionSourceHashName)}] = ${JSON.stringify(sourceHash)};
@@ -3220,10 +3389,20 @@ async function main() {
       return child;
     },
     onProcessError: (error) => {
-      console.error(`Taskboard process error: ${error.message}`);
+      console.error(JSON.stringify({
+        taskboardProcess: { event: "supervisor-error", message: error.message },
+      }));
     },
     onUnexpectedExit: (code, signal) => {
-      console.error(`Taskboard exited (${signal || code}); it will be restarted automatically.`);
+      console.error(JSON.stringify({
+        taskboardProcess: {
+          event: "unexpected-exit",
+          code,
+          signal,
+          autoRestart: true,
+          message: "it will be restarted automatically",
+        },
+      }));
     },
     onForcedKill: ({ pid, signal, terminateTimeoutMs }) => {
       console.error(JSON.stringify({

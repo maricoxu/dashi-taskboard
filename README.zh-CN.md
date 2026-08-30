@@ -63,6 +63,8 @@ ln -s /absolute/path/to/codex-taskboard/skills/manage-taskboard \
 
 ## 嵌入 Codex
 
+Renderer 崩溃、日志位置和单 injector 重启流程见 [Codex Renderer Crash Diagnostics](docs/renderer-crash-diagnostics.md)。
+
 ### 手动：使用专用 CDP 端口
 
 让现有 Codex 窗口保持打开。在 Taskboard 仓库中，使用专用 CDP 端口启动第二个 Codex 实例：

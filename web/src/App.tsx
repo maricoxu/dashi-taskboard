@@ -295,6 +295,14 @@ interface PendingAutomationRequest {
   timeoutId: number;
 }
 
+function hostContextSignature(context: HostContext): string {
+  try {
+    return JSON.stringify(context);
+  } catch {
+    return "";
+  }
+}
+
 const DEFAULT_USER_ACTOR: ActorIdentity = {
   type: "user",
   id: "local-user",
@@ -871,6 +879,7 @@ export function App() {
   const loadedAutomationProjectIdsRef = useRef(new Set<string>());
   const queuedAutomationSavesRef = useRef(new Map<string, QueuedProjectAutomationSave>());
   const projectAutomationsRef = useRef(projectAutomations);
+  const hostContextSignatureRef = useRef("");
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -1789,6 +1798,9 @@ export function App() {
 
       if (message.type !== "taskboard:host-context" || !message.payload) return;
       const payload = message.payload as HostContext;
+      const signature = hostContextSignature(payload);
+      if (signature === hostContextSignatureRef.current) return;
+      hostContextSignatureRef.current = signature;
       setHostContext(payload);
       setCurrentUserActor(payload.user);
       if (isTheme(payload.theme)) setTheme(payload.theme);
@@ -1800,6 +1812,7 @@ export function App() {
     postEmbeddedHostMessage({ type: "taskboard:frame-awaiting-challenge" });
     return () => {
       window.removeEventListener("message", receiveHostMessage);
+      hostContextSignatureRef.current = "";
       setEmbeddedFrameChallenge("");
       removeExternalLinkHandler();
       for (const pending of pendingAutomationRequestsRef.current.values()) {
