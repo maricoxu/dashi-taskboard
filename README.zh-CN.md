@@ -50,6 +50,19 @@ npm run taskctl -- issue create \
 
 请运行 `npm link`，以便在 shell 路径中使用 `taskctl`。设置 `CODEX_TASKBOARD_URL`，可让 CLI 指向另一个本地或局域网服务。云端部署通过**回环 companion**（本机 loopback 配套服务，不是「伴侣」）使用 `taskctl cloud login` 配置。
 
+## 跨设备同步 Taskboard
+
+源码仓库提供了一个短入口，把现有 Taskboard Handoff 核心脚本接到当前检出的 .data 和标准 iCloud 目录。它不会把活动 SQLite 放入 iCloud，也不会绕过 Handoff 的完整性校验、备份和冲突保护。
+
+~~~bash
+npm run taskboard:handoff -- status --json
+npm run taskboard:handoff -- store
+npm run taskboard:handoff -- receive --allow-bootstrap
+npm run taskboard:handoff -- receive --allow-bootstrap --apply
+~~~
+
+store 前先停止 Taskboard 写入；receive --apply 前必须停止目标机的 Taskboard 服务。首次接收才需要 --allow-bootstrap，应用接收后再运行 npm run source-launcher:install。默认 Handoff 核心位于同步后的 Obsidian 笔记库；如果路径不同，设置 TASKBOARD_HANDOFF_SCRIPT。若机器名无法自动判断设备，可设置 TASKBOARD_HANDOFF_DEVICE_ID 为 mac-studio 或 macbook。完整的跨设备流程见每日沉淀中的 dashi-taskboard-cross-device-install-and-sync，以及 docs/cloud-collaboration.md。
+
 ## 安装 Codex Skill
 
 将 `skills/manage-taskboard` 复制或符号链接到 Codex Skill 目录，然后启动一个新的 Codex 任务：
@@ -87,6 +100,8 @@ npm run codex:inject -- --port 9231 --open
 内嵌面板使用隔离的 host bridge：iframe 的 CSS/JavaScript 构建资源由注入器内联，面板对本地 Taskboard 的 `/api/...` 请求由 Codex host 代发。这样保留 iframe 的 sandbox 隔离，不依赖 Chromium 对 `origin=null` 直接访问回环地址的许可。普通浏览器页面仍直接访问 HTTP 服务；前端源码修改后运行 `npm run build`，再刷新或重启注入器使内嵌版本更新。
 
 ### 推荐：用一个命令启动独立 Taskboard 窗口
+
+源码启动器的登录项使用 launchd KeepAlive 和 5 秒节流：injector 或 Taskboard 服务异常退出后会自动拉起。需要执行 Handoff 或完全停用时，先使用 launchctl bootout 停止该登录项，避免它立即重新启动。
 
 让现有 Codex 窗口保持打开，然后运行：
 

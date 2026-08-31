@@ -127,7 +127,10 @@ while read -r pid command; do
   process_cwd="$(/usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | /usr/bin/sed -n 's/^n//p')"
   if [[ "$process_cwd" == "$SOURCE_ROOT" ]]; then
     /bin/kill -USR2 "$pid" 2>/dev/null || true
-    exit 0
+    while /bin/kill -0 "$pid" 2>/dev/null; do
+      /bin/sleep 5
+    done
+    exit 1
   fi
 done < <(/bin/ps -axo pid=,command=)
 
@@ -163,6 +166,8 @@ const launchAgentPlist = `<?xml version="1.0" encoding="UTF-8"?>
   </array>
   <key>WorkingDirectory</key><string>${xml(projectRoot)}</string>
   <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>${xml(bootstrapLog)}</string>
   <key>StandardErrorPath</key><string>${xml(bootstrapLog)}</string>
