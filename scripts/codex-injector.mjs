@@ -2750,7 +2750,10 @@ function installTaskboardHostBinding(
         heartbeatRetryAt = 0;
       },
       (error) => {
-        if (heartbeatInFlight === operation) heartbeatInFlight = null;
+        // A timed-out operation may reject after a later heartbeat has
+        // already started. Only the current operation may change retry state.
+        if (heartbeatInFlight !== operation) return;
+        heartbeatInFlight = null;
         if (!timeoutObserved) heartbeatFailureCount += 1;
         heartbeatRetryAt = Date.now() + heartbeatBackoffMs();
         console.error(JSON.stringify({
@@ -2776,6 +2779,10 @@ function installTaskboardHostBinding(
     ]);
     clearTimeout(timeout);
     if (result.status === "timeout") {
+      // Promise.race does not cancel Runtime.evaluate. Release the slot so a
+      // later heartbeat can recover, while the stale operation is ignored by
+      // the guarded handlers above.
+      if (heartbeatInFlight === operation) heartbeatInFlight = null;
       timeoutObserved = true;
       heartbeatFailureCount += 1;
       heartbeatRetryAt = Date.now() + heartbeatBackoffMs();

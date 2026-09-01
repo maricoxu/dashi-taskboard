@@ -55,6 +55,8 @@ test("heartbeat recovery reuses one isolated context and does not close a busy r
   assert.match(source, /Runtime\.executionContextsCleared/);
   assert.match(heartbeatSource, /heartbeatInFlight/);
   assert.match(heartbeatSource, /heartbeat-timeout/);
+  assert.match(heartbeatSource, /if \(heartbeatInFlight !== operation\) return;/);
+  assert.match(heartbeatSource, /if \(heartbeatInFlight === operation\) heartbeatInFlight = null;/);
   assert.doesNotMatch(heartbeatSource, /cdp\.close\(\)/);
 });
 
