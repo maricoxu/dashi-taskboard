@@ -244,6 +244,15 @@ test("the package injection command remains resident for tab-triggered recovery"
   assert.match(source, /__codexTaskboardHostStartupTokenV1/);
 });
 
+test("service-only mode keeps Taskboard local without launching a CDP Codex profile", () => {
+  assert.match(source, /else if \(arg === "--service-only"\) options\.serviceOnly = true/);
+  assert.match(source, /--service-only cannot launch or attach to a CDP Codex process/);
+  assert.match(source, /const runServiceOnly = async \(\) =>/);
+  assert.match(source, /if \(!options\.cdpPipe && !options\.serviceOnly\) \{/);
+  assert.match(source, /if \(options\.serviceOnly\) \{\s*await runServiceOnly\(\);\s*return;/);
+  assert.match(source, /if \(allRunningCodex\.length > 0\) \{/);
+});
+
 test("attach reconciles the renderer against a hashed current injection source", () => {
   assert.match(source, /createHash\("sha256"\)/);
   assert.match(source, /__CODEX_TASKBOARD_SOURCE_HASH__/);

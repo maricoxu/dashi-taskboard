@@ -21,17 +21,28 @@ const maxLogLineLength = 32_768;
 const rendererMemoryLogIntervalMs = 10_000;
 const rendererHighMemoryThresholdKb = 512 * 1024;
 const systemDiagnosticDirectory = "/Library/Logs/DiagnosticReports";
+const defaultObserverDurationMs = 30 * 60 * 1_000;
 
 function parseArgs(argv) {
-  const options = { port: 9232, logFile: defaultLogFile };
+  const options = {
+    port: 9232,
+    logFile: defaultLogFile,
+    durationMs: defaultObserverDurationMs,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--port") options.port = Number(argv[++index]);
     else if (arg === "--log-file") options.logFile = path.resolve(argv[++index]);
+    else if (arg === "--duration-minutes") {
+      options.durationMs = Number(argv[++index]) * 60 * 1_000;
+    }
     else throw new Error(`Unknown option: ${arg}`);
   }
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) {
     throw new Error("--port must be an integer between 1 and 65535");
+  }
+  if (!Number.isFinite(options.durationMs) || options.durationMs < 0) {
+    throw new Error("--duration-minutes must be a non-negative number");
   }
   return options;
 }
@@ -567,10 +578,18 @@ async function scan() {
   }
 }
 
-write("observer.started", { port: options.port, logFile: options.logFile, projectRoot });
+const observerDeadline = options.durationMs === 0
+  ? Number.POSITIVE_INFINITY
+  : Date.now() + options.durationMs;
+write("observer.started", {
+  port: options.port,
+  logFile: options.logFile,
+  projectRoot,
+  durationMs: options.durationMs,
+});
 process.once("SIGINT", () => { stopping = true; });
 process.once("SIGTERM", () => { stopping = true; });
-while (!stopping) {
+while (!stopping && Date.now() < observerDeadline) {
   await scanRendererProcesses();
   await scanCrashpad();
   await scanSystemDiagnostics();
@@ -578,5 +597,8 @@ while (!stopping) {
   await new Promise((resolve) => setTimeout(resolve, 1_000));
 }
 for (const connection of connections.values()) connection.close();
-write("observer.stopped", { attachedTargets: seenTargets.size });
+write("observer.stopped", {
+  attachedTargets: seenTargets.size,
+  reason: stopping ? "signal" : "duration",
+});
 await new Promise((resolve) => file.end(resolve));

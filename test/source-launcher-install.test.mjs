@@ -12,5 +12,8 @@ test("source LaunchAgent keeps the injector alive with launchd backoff", () => {
   assert.match(installerSource, /<key>KeepAlive<\/key><true\/>/);
   assert.match(installerSource, /<key>ThrottleInterval<\/key><integer>5<\/integer>/);
   assert.ok(installerSource.includes('while /bin/kill -0 "$pid" 2>/dev/null'));
-  assert.ok(installerSource.includes('done\n    exit 1'));
+  assert.ok(installerSource.includes('done\n      exit 1'));
+  assert.ok(installerSource.includes('if [[') && installerSource.includes('--foreground'));
+  assert.match(installerSource, /<string>--service-only<\/string>/);
+  assert.match(installerSource, /--source-log --service-only --watch --open --port 9231/);
 });

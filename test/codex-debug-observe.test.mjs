@@ -29,3 +29,11 @@ test("diagnostic logs are bounded and collect Crashpad and Jetsam evidence", () 
   assert.match(source, /renderer\.memory-snapshot/);
   assert.match(source, /cdp\.scan-recovered/);
 });
+
+test("renderer diagnostics stop after thirty minutes unless explicitly unbounded", () => {
+  assert.match(source, /defaultObserverDurationMs = 30 \* 60 \* 1_000/);
+  assert.match(source, /--duration-minutes/);
+  assert.match(source, /options\.durationMs === 0/);
+  assert.match(source, /Date\.now\(\) < observerDeadline/);
+  assert.match(source, /reason: stopping \? "signal" : "duration"/);
+});

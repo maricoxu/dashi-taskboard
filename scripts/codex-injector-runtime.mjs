@@ -246,6 +246,19 @@ export async function restartResidentInjector(port, handlers) {
   };
 }
 
+export function preferredCodexProcesses(records, independentProfilePath) {
+  const defaultProfileProcesses = records.filter(
+    (record) => !/(?:^|\s)--user-data-dir=/.test(record.command),
+  );
+  if (defaultProfileProcesses.length > 0) return defaultProfileProcesses;
+
+  const profileArgument = "--user-data-dir=" + independentProfilePath;
+  return records.filter((record) => (
+    record.command.includes(" " + profileArgument + " ")
+    || record.command.endsWith(" " + profileArgument)
+  ));
+}
+
 function commandPort(command, defaultPort) {
   const match = command.match(/(?:^|\s)--port(?:=(\d+)|\s+(\d+))(?=\s|$)/);
   return match ? Number(match[1] ?? match[2]) : defaultPort;

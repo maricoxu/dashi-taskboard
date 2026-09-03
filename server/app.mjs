@@ -1446,6 +1446,7 @@ function parseComposerTurn(body) {
 class EventHub {
   constructor() {
     this.clients = new Set();
+    this.revision = Date.now();
     this.keepAlive = setInterval(() => {
       for (const response of this.clients) response.write(": keep-alive\n\n");
     }, 20_000);
@@ -1465,6 +1466,7 @@ class EventHub {
   }
 
   emit(type, value) {
+    this.revision += 1;
     const event = {
       type,
       projectId: value.projectId ?? value.project?.id ?? value.task?.projectId,
@@ -1474,6 +1476,13 @@ class EventHub {
     };
     const message = `event: ${type}\ndata: ${JSON.stringify(event)}\n\n`;
     for (const response of this.clients) response.write(message);
+  }
+
+  since(revision) {
+    return {
+      changed: this.revision > revision,
+      revision: this.revision,
+    };
   }
 
   close() {
@@ -2604,6 +2613,21 @@ export function createTaskboardServer(options = {}) {
             );
           }
         }
+      }
+
+      if (pathname === "/api/revisions") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        assertAllowedQuery(url.searchParams, new Set(["since"]), "GET /api/revisions");
+        const rawSince = url.searchParams.get("since") ?? "0";
+        const since = Number(rawSince);
+        if (!/^\d+$/.test(rawSince) || !Number.isSafeInteger(since)) {
+          throw new ApiError(
+            400,
+            "INVALID_REVISION",
+            "'since' must be a non-negative safe integer",
+          );
+        }
+        return sendJson(response, 200, events.since(since));
       }
 
       if (pathname === "/api/projects") {

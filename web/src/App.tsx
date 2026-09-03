@@ -601,15 +601,35 @@ function LocalRealtimeSync({
 }: LocalRealtimeSyncProps) {
   useEffect(() => {
     if (isEmbeddedHost()) {
-      setConnection("live");
+      const controller = new AbortController();
+      setConnection("connecting");
       void refreshProjectBoardDisplaySettings();
-      const refresh = () => {
-        void refreshProjectList();
-        if (selectedProjectId) void refreshTasks(selectedProjectId, { quiet: true });
+      const poller = createRevisionPoller({
+        intervalMs: 2_000,
+        fetchRevision: async (since: number) => {
+          try {
+            const result = await getTaskboardRevision(since, controller.signal);
+            setConnection("live");
+            return result;
+          } catch (error) {
+            if (!controller.signal.aborted) setConnection("reconnecting");
+            throw error;
+          }
+        },
+        onInvalidate: () => {
+          void refreshProjectList();
+          void refreshProjectBoardDisplaySettings();
+          if (selectedProjectId) void refreshTasks(selectedProjectId, { quiet: true });
+          setReadmeRevision((current) => current + 1);
+          setCommentsRevision((current) => current + 1);
+          setAttachmentsRevision((current) => current + 1);
+        },
+      });
+      poller.start();
+      return () => {
+        controller.abort();
+        poller.stop();
       };
-      refresh();
-      const timer = window.setInterval(refresh, 2_500);
-      return () => window.clearInterval(timer);
     }
     const source = new EventSource(resolveTaskboardUrl("/api/events"));
     let refreshTimer: number | undefined;

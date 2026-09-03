@@ -127,10 +127,13 @@ while read -r pid command; do
   process_cwd="$(/usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | /usr/bin/sed -n 's/^n//p')"
   if [[ "$process_cwd" == "$SOURCE_ROOT" ]]; then
     /bin/kill -USR2 "$pid" 2>/dev/null || true
-    while /bin/kill -0 "$pid" 2>/dev/null; do
-      /bin/sleep 5
-    done
-    exit 1
+    if [[ "\${1:-}" == "--foreground" ]]; then
+      while /bin/kill -0 "$pid" 2>/dev/null; do
+        /bin/sleep 5
+      done
+      exit 1
+    fi
+    exit 0
   fi
 done < <(/bin/ps -axo pid=,command=)
 
@@ -144,12 +147,16 @@ export CODEX_TASKBOARD_CODEX_PROFILE="$HOME/Library/Application Support/Codex Ta
 
 cd "$SOURCE_ROOT"
 if [[ "\${1:-}" == "--foreground" ]]; then
+  if [[ "\${2:-}" == "--service-only" ]]; then
+    exec "$NODE_BIN" "$SOURCE_ROOT/scripts/codex-injector.mjs" \
+      --source-log --service-only --watch --port 9231
+  fi
   exec "$NODE_BIN" "$SOURCE_ROOT/scripts/codex-injector.mjs" \
     --source-log --launch --watch --open --port 9231
 fi
 
 /usr/bin/nohup "$NODE_BIN" "$SOURCE_ROOT/scripts/codex-injector.mjs" \
-  --source-log --launch --watch --open --port 9231 \
+  --source-log --service-only --watch --open --port 9231 \
   >> "$BOOTSTRAP_LOG" 2>&1 &
 exit 0
 `;
@@ -163,6 +170,7 @@ const launchAgentPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <array>
     <string>${xml(appExecutable)}</string>
     <string>--foreground</string>
+    <string>--service-only</string>
   </array>
   <key>WorkingDirectory</key><string>${xml(projectRoot)}</string>
   <key>RunAtLoad</key><true/>

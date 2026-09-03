@@ -31,6 +31,7 @@ import {
 import {
   findResidentInjectorPids,
   handleHostBindingPayload,
+  preferredCodexProcesses,
   reconcileInjectionRuntime,
   restartResidentInjector,
 } from "./codex-injector-runtime.mjs";
@@ -235,6 +236,7 @@ function parseArgs(argv) {
     attachExisting: false,
     startupToken: null,
     daemon: false,
+    serviceOnly: false,
     sourceLog: false,
     screenshot: null,
     appPath: process.platform === "linux" ? "/usr/bin/chatgpt" : "/Applications/ChatGPT.app",
@@ -256,6 +258,7 @@ function parseArgs(argv) {
       }
     }
     else if (arg === "--daemon") options.daemon = true;
+    else if (arg === "--service-only") options.serviceOnly = true;
     else if (arg === "--source-log") options.sourceLog = true;
     else if (arg === "--port") {
       options.port = Number(argv[++index]);
@@ -273,6 +276,9 @@ function parseArgs(argv) {
   }
   if (options.cdpPipe && !options.launch) {
     throw new Error("--cdp-pipe requires --launch");
+  }
+  if (options.serviceOnly && (options.launch || options.cdpPipe || options.attachExisting)) {
+    throw new Error("--service-only cannot launch or attach to a CDP Codex process");
   }
   return options;
 }
@@ -3421,10 +3427,40 @@ async function main() {
     }
   };
 
+  const runServiceOnly = async () => {
+    nativeCodexBrowser = true;
+    if (hasOpenPending()) await requestTaskboardOpen();
+    if (!options.watch) return;
+
+    while (!stopping) {
+      await Promise.race([
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
+        stopRequested,
+      ]);
+      if (stopping) break;
+      try {
+        const service = await supervisor.ensure();
+        if (service.restarted) await publishRuntime();
+      } catch (error) {
+        console.error("Waiting for Taskboard service: " + error.message);
+      }
+      if (hasOpenPending()) await requestTaskboardOpen();
+    }
+  };
+
   const startManagedCodex = async () => {
     if (stopping) return false;
     if (!options.cdpPipe) {
-      const runningCodex = codexAppProcesses(options.appPath);
+      const allRunningCodex = codexAppProcesses(options.appPath);
+      const runningCodex = preferredCodexProcesses(
+        allRunningCodex,
+        independentCodexProfilePath,
+      );
+      if (allRunningCodex.length > runningCodex.length) {
+        console.log(JSON.stringify({
+          ignoredCustomCodexProfiles: allRunningCodex.length - runningCodex.length,
+        }));
+      }
       let debuggingCodexFound = false;
       for (const record of runningCodex) {
         const port = codexProcessDebuggingPort(record);
@@ -3442,7 +3478,7 @@ async function main() {
         console.log(JSON.stringify({ reusedCodexPid: record.pid, cdpPort: port }));
         return true;
       }
-      if (runningCodex.length > 0) {
+      if (allRunningCodex.length > 0) {
         if (debuggingCodexFound) return false;
         nativeCodexBrowser = true;
         return false;
@@ -3568,7 +3604,7 @@ async function main() {
   try {
     if (stopping) return;
     let cdpReachable = false;
-    if (!options.cdpPipe) {
+    if (!options.cdpPipe && !options.serviceOnly) {
       cdpReachable = await isReachable(cdpVersionUrl);
       if (!cdpReachable && options.watch && !options.launch) {
         await waitUntilReachable(cdpVersionUrl, 60_000);
@@ -3584,6 +3620,11 @@ async function main() {
     if (stopping) return;
     await publishRuntime();
     if (stopping) return;
+
+    if (options.serviceOnly) {
+      await runServiceOnly();
+      return;
+    }
 
     if (options.cdpPipe || !cdpReachable) {
       idleAfterNormalExit = !(await startManagedCodex()) && !nativeCodexBrowser;

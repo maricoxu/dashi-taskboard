@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   findResidentInjectorPids,
   handleHostBindingPayload,
+  preferredCodexProcesses,
   reconcileInjectionRuntime,
   restartResidentInjector,
 } from "../scripts/codex-injector-runtime.mjs";
@@ -237,6 +238,31 @@ test("resident discovery accepts this repository's absolute and relative launch 
     defaultPort: 9229,
     cwdForPid: (pid) => cwdByPid.get(pid) ?? null,
   }), [102, 105]);
+});
+
+test("automatic launch ignores unrelated custom Codex profiles", () => {
+  const defaultCodex = { pid: 10, command: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" };
+  const manualDebug = {
+    pid: 20,
+    command: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir=/tmp/manual-debug --remote-debugging-port=9232",
+  };
+  const managedProfile = "/Users/test/Library/Application Support/Codex Taskboard Source/Codex Profile";
+  const managedCodex = {
+    pid: 30,
+    command: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir="
+      + managedProfile
+      + " --remote-debugging-port=9231",
+  };
+
+  assert.deepEqual(
+    preferredCodexProcesses([manualDebug, managedCodex, defaultCodex], managedProfile),
+    [defaultCodex],
+  );
+  assert.deepEqual(
+    preferredCodexProcesses([manualDebug, managedCodex], managedProfile),
+    [managedCodex],
+  );
+  assert.deepEqual(preferredCodexProcesses([manualDebug], managedProfile), []);
 });
 
 test("refresh stops every stale resident before starting one token-verified replacement", async () => {

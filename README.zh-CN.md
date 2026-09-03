@@ -63,6 +63,12 @@ npm run taskboard:handoff -- receive --allow-bootstrap --apply
 
 store 前先停止 Taskboard 写入；receive --apply 前必须停止目标机的 Taskboard 服务。首次接收才需要 --allow-bootstrap，应用接收后再运行 npm run source-launcher:install。默认 Handoff 核心位于同步后的 Obsidian 笔记库；如果路径不同，设置 TASKBOARD_HANDOFF_SCRIPT。若机器名无法自动判断设备，可设置 TASKBOARD_HANDOFF_DEVICE_ID 为 mac-studio 或 macbook。完整的跨设备流程见每日沉淀中的 dashi-taskboard-cross-device-install-and-sync，以及 docs/cloud-collaboration.md。
 
+### 稳定运行建议
+
+源码启动器默认只常驻 Taskboard 服务；它不会在登录时自动创建第二套 CDP Codex profile。双击 Codex Taskboard Source.app 时，优先通过普通 Codex 的原生浏览面板打开。只有明确运行 npm run codex 或 npm run codex:inject 时，才启用 CDP 注入模式。
+
+不要把 npm run codex:observe 当作常驻服务；它默认运行 30 分钟后退出。需要持续采样时才追加 --duration-minutes 0，并在复现完成后按 Ctrl-C 结束。
+
 ## 安装 Codex Skill
 
 将 `skills/manage-taskboard` 复制或符号链接到 Codex Skill 目录，然后启动一个新的 Codex 任务：

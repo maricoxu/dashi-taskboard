@@ -1,5 +1,7 @@
 # Codex Renderer Crash Diagnostics
 
+The observer runs for 30 minutes by default and then exits. This prevents a forgotten diagnostic process from scanning every renderer and growing its log indefinitely. Pass --duration-minutes 0 only when continuous sampling is intentional.
+
 这份文档记录 Codex Taskboard 内嵌面板导致 renderer 高内存、CDP 断开和自动重启时的标准排查方式。
 
 ## 已定位的根因
