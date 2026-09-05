@@ -360,6 +360,13 @@ test("service-only mode keeps Taskboard local without launching a CDP Codex prof
   assert.match(source, /if \(allRunningCodex\.length > 0\) \{/);
 });
 
+test("direct iframe mode is explicit and keeps native actions on the host bridge", () => {
+  assert.match(packageJson.scripts["codex:direct"], /CODEX_TASKBOARD_DIRECT_IFRAME=1/);
+  assert.match(source, /const directIframeEnabled = process\.env\.CODEX_TASKBOARD_DIRECT_IFRAME === "1"/);
+  assert.match(source, /__CODEX_TASKBOARD_DIRECT_IFRAME__ = \$\{JSON\.stringify\(directIframeEnabled\)\}/);
+  assert.match(source, /httpRequest: proxyTaskboardHttpRequest/);
+});
+
 test("the existing-Codex fallback opens its deep link with the platform default application", () => {
   assert.match(
     source,

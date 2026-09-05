@@ -32,6 +32,8 @@
   const HOST_HEARTBEAT_MAX_AGE_MS = 8_000;
   const MACOS_TITLEBAR_SAFE_LEFT = 80;
   const FRAME_REFRESH_PARAM = "__codex_taskboard_refresh";
+  const DIRECT_IFRAME_PARAM = "__codex_taskboard_direct";
+  const FRAME_CAPABILITY_PARAM = "__codex_taskboard_frame_capability";
   const PLUGIN_LABELS = ["插件", "plugins", "外掛程式", "プラグイン"];
   const NATIVE_PAGE_LABELS = [
     "新建任务",
@@ -72,6 +74,7 @@
   let frameTaskboardUrl = "";
   let frameCapability = "";
   let frameChallenge = "";
+  let frameDirect = false;
   let frameReady = false;
   let frameReadyWaiters = new Set();
   let hostRequests = new Map();
@@ -1340,6 +1343,7 @@
 
   function challengeFrameDocument(event) {
     if (!frame || event.currentTarget !== frame) return;
+    if (frameDirect) return;
     diagnostic("frame-load", { hasChallengeBeforeRotation: Boolean(frameChallenge) });
     frameReady = false;
     frameChallenge = crypto.randomUUID();
@@ -1368,6 +1372,18 @@
     }
     if (message.type === "taskboard:frame-awaiting-challenge") {
       postFrameChallenge();
+      return;
+    }
+    if (frameDirect && message.type === "taskboard:ready") {
+      if (frameReady) return;
+      frameReady = true;
+      frameReadyWaiters.forEach(({ resolve, timer }) => {
+        window.clearTimeout(timer);
+        resolve();
+      });
+      frameReadyWaiters.clear();
+      if (active) showFrame();
+      postHostContext();
       return;
     }
     if (!frameChallenge || message.challenge !== frameChallenge) return;
@@ -1587,6 +1603,7 @@
     frameTaskboardUrl = "";
     frameCapability = "";
     frameChallenge = "";
+    frameDirect = false;
     frameReady = false;
     if (dragRegion) dragRegion.hidden = true;
     if (noDragLeft) noDragLeft.hidden = true;
@@ -1597,10 +1614,15 @@
       taskboardUrl.searchParams.set(FRAME_REFRESH_PARAM, Date.now().toString(36));
     }
     taskboardOrigin = taskboardUrl.origin;
-    frameTaskboardUrl = taskboardUrl.href;
-    frameOrigin = "null";
     const frameName = `codex-taskboard-${crypto.randomUUID()}`;
     frameCapability = crypto.randomUUID();
+    frameDirect = window.__CODEX_TASKBOARD_DIRECT_IFRAME__ === true;
+    if (frameDirect) {
+      taskboardUrl.searchParams.set(DIRECT_IFRAME_PARAM, "1");
+      taskboardUrl.searchParams.set(FRAME_CAPABILITY_PARAM, frameCapability);
+    }
+    frameTaskboardUrl = taskboardUrl.href;
+    frameOrigin = frameDirect ? taskboardUrl.origin : "null";
     // Generate the challenge before inserting about:blank. The sandboxed
     // document can execute immediately after the host replaces it, before
     // the iframe load event fires; having a challenge ready lets the first
@@ -1611,8 +1633,12 @@
     nextFrame.id = FRAME_ID;
     nextFrame.name = frameName;
     nextFrame.hidden = true;
-    nextFrame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-downloads");
-    nextFrame.src = "about:blank";
+    nextFrame.setAttribute(
+      "sandbox",
+      "allow-scripts allow-forms allow-modals allow-downloads"
+        + (frameDirect ? " allow-same-origin" : ""),
+    );
+    nextFrame.src = frameDirect ? frameTaskboardUrl : "about:blank";
     nextFrame.title = hostText("任务面板", "Taskboard");
     nextFrame.referrerPolicy = "no-referrer";
     nextFrame.setAttribute("allow", "clipboard-read; clipboard-write");
@@ -1627,7 +1653,10 @@
     const generation = ++openGeneration;
     if (active) showLoading();
     const frameRequest = loadTaskboardFrame(true);
-    void requestHostLoadFrame(frameRequest)
+    const frameLoad = frameDirect
+      ? Promise.resolve()
+      : requestHostLoadFrame(frameRequest);
+    void frameLoad
       .then(() => waitForFrameReady())
       .then(() => {
           if (!active || generation !== openGeneration) return;
@@ -1757,7 +1786,9 @@
 
     try {
       const [result, context] = await Promise.all([
-        requestHostEnsure(taskboardUrl),
+        window.__CODEX_TASKBOARD_DIRECT_IFRAME__ === true
+          ? Promise.resolve({ managed: false, restarted: false })
+          : requestHostEnsure(taskboardUrl),
         captureHostContext(),
       ]);
       if (!active || generation !== openGeneration) return;
@@ -1771,7 +1802,7 @@
       if (!frameReady || result.restarted || !frameMatchesTaskboardUrl(taskboardUrl)) {
         showLoading();
         const frameRequest = loadTaskboardFrame();
-        await requestHostLoadFrame(frameRequest);
+        if (!frameDirect) await requestHostLoadFrame(frameRequest);
         await waitForFrameReady();
       }
       if (!active || generation !== openGeneration) return;

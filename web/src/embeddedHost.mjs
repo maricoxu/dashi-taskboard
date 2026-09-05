@@ -1,13 +1,32 @@
+const DIRECT_IFRAME_PARAM = "__codex_taskboard_direct";
+const FRAME_CAPABILITY_PARAM = "__codex_taskboard_frame_capability";
+
 function frameCapability() {
   return typeof globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__ === "string"
     ? globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__
-    : "";
+    : typeof window !== "undefined"
+      ? new URL(window.location.href).searchParams.get(FRAME_CAPABILITY_PARAM) || ""
+      : "";
 }
 
 export function isEmbeddedHost() {
   return typeof window !== "undefined"
     && window.parent !== window
     && Boolean(frameCapability());
+}
+
+export function isDirectEmbeddedHost() {
+  if (!isEmbeddedHost()) return false;
+  try {
+    const url = new URL(window.location.href);
+    return (
+      url.searchParams.get(DIRECT_IFRAME_PARAM) === "1"
+      && (url.hostname === "127.0.0.1" || url.hostname === "localhost")
+      && (url.protocol === "http:" || url.protocol === "https:")
+    );
+  } catch {
+    return false;
+  }
 }
 
 let activeFrameChallenge = "";
@@ -39,6 +58,9 @@ function receiveEmbeddedFrameChallenge(event) {
 
 if (typeof window !== "undefined" && isEmbeddedHost()) {
   window.addEventListener("message", receiveEmbeddedFrameChallenge);
+  if (isDirectEmbeddedHost()) {
+    queueMicrotask(() => postEmbeddedHostMessage({ type: "taskboard:ready" }));
+  }
 }
 
 export function postEmbeddedHostMessage(message) {
@@ -50,7 +72,7 @@ export function postEmbeddedHostMessage(message) {
 }
 
 export function requestEmbeddedHostHttp(input) {
-  if (!isEmbeddedHost()) return null;
+  if (!isEmbeddedHost() || isDirectEmbeddedHost()) return null;
   const requestId = `taskboard-http-${crypto.randomUUID()}`;
   if (!activeFrameChallenge && !frameChallengeRequested) {
     frameChallengeRequested = true;

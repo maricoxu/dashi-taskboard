@@ -11,6 +11,7 @@
   },
   "scripts": {
     "codex": "node scripts/codex-injector.mjs --source-log --launch --watch --open --port 9231",
+    "codex:direct": "CODEX_TASKBOARD_DIRECT_IFRAME=1 node scripts/codex-injector.mjs --source-log --launch --watch --open --port 9231",
     "codex:inject": "node scripts/codex-injector.mjs --source-log --watch",
     "codex:daemon": "node scripts/codex-injector.mjs --source-log --daemon --open",
     "codex:refresh": "node scripts/codex-injector.mjs --refresh",

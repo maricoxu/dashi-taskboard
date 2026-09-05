@@ -67,6 +67,8 @@ store 前先停止 Taskboard 写入；receive --apply 前必须停止目标机�
 
 源码启动器默认只常驻 Taskboard 服务；它不会在登录时自动创建第二套 CDP Codex profile。双击 Codex Taskboard Source.app 时，优先通过普通 Codex 的原生浏览面板打开。只有明确运行 npm run codex 或 npm run codex:inject 时，才启用 CDP 注入模式。
 
+如果要实验“扩大 iframe 权限、取消 HTTP API 转接”，可显式运行 npm run codex:direct。它只在这次 injector 运行中启用 allow-same-origin，让内嵌页面直接访问本机 Taskboard；原生 Codex 操作仍通过 host bridge。该模式不是默认模式，只适合本机可信服务的性能对比，复现结束后回到 npm run codex。
+
 不要把 npm run codex:observe 当作常驻服务；它默认运行 30 分钟后退出。需要持续采样时才追加 --duration-minutes 0，并在复现完成后按 Ctrl-C 结束。
 
 ## 安装 Codex Skill

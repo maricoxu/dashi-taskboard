@@ -201,6 +201,7 @@ const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardBaseUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}`;
 const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
 let lastTaskboardHealthFailure = null;
+const directIframeEnabled = process.env.CODEX_TASKBOARD_DIRECT_IFRAME === "1";
 const hostBindingName = "__codexTaskboardHostV1";
 const hostRequestMessage = "__codexTaskboardHostRequestV1";
 const hostResponseMessage = "__codexTaskboardHostResponseV1";
@@ -3263,6 +3264,7 @@ async function currentInjectionSource() {
   const userScript = await readFile(injectionPath, "utf8");
   const runtimeSource = `window.__CODEX_TASKBOARD_MANAGED_ORIGIN__ = ${JSON.stringify(taskboardOrigin)};
 window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = ${JSON.stringify(hostCapability)};
+window.__CODEX_TASKBOARD_DIRECT_IFRAME__ = ${JSON.stringify(directIframeEnabled)};
 window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(taskboardPageUrl)};
 ${userScript}`;
   // The capability is intentionally per injector process; it must not make

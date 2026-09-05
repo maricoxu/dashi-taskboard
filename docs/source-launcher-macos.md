@@ -2,6 +2,8 @@
 
 当前版本的登录启动项使用 service-only 模式，只负责常驻本地 Taskboard 服务，不会在登录时额外启动一套 Codex CDP profile。双击应用时再通过普通 Codex 原生浏览面板打开 Taskboard；需要调试注入时，单独运行 npm run codex:inject。
 
+性能实验可用 npm run codex:direct。该显式模式给 Taskboard iframe 增加 allow-same-origin 并让其直接请求本地服务，仍保留 host bridge 处理原生 Codex 操作；它不会改变源码启动器的默认模式。
+
 源码启动器由 launchd 负责常驻。安装器生成的登录项启用 KeepAlive，并设置 5 秒 ThrottleInterval：injector 或 Taskboard 服务异常退出时会自动重启；执行 Taskboard Handoff 前必须先 bootout 该登录项，接收完成后再启动。
 
 源码启动器用于直接运行当前 Git 工作副本，不在 App 中复制第二份 Taskboard 代码，也不创建第二套数据库。适合本地修改、调试和在多台 Mac 上复用同一套安装方法。

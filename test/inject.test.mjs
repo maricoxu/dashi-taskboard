@@ -26,13 +26,23 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.match(source, /http:\/\/127\.0\.0\.1:47823\/\?host=codex/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
   assert.match(source, /nextFrame\.name = frameName/);
-  assert.match(source, /nextFrame\.src = "about:blank"/);
+  assert.match(source, /nextFrame\.src = frameDirect \? frameTaskboardUrl : "about:blank"/);
   assert.match(source, /requestHost\("load-frame", \{ frameName, frameCapability: capability \}\)/);
   assert.match(source, /frameCapability = crypto\.randomUUID\(\)/);
-  assert.match(source, /nextFrame\.setAttribute\("sandbox", "allow-scripts/);
+  assert.match(source, /nextFrame\.setAttribute\([\s\S]*?"sandbox"/);
   assert.match(source, /taskboardOrigin = taskboardUrl\.origin/);
-  assert.match(source, /frameOrigin = "null"/);
-  assert.doesNotMatch(source, /allow-same-origin/);
+  assert.match(source, /frameOrigin = frameDirect \? taskboardUrl\.origin : "null"/);
+  assert.match(source, /frameDirect \? " allow-same-origin" : ""/);
+});
+
+test("direct iframe mode is opt-in and keeps the host bridge for native actions", () => {
+  assert.match(source, /const DIRECT_IFRAME_PARAM = "__codex_taskboard_direct"/);
+  assert.match(source, /const FRAME_CAPABILITY_PARAM = "__codex_taskboard_frame_capability"/);
+  assert.match(source, /frameDirect = window\.__CODEX_TASKBOARD_DIRECT_IFRAME__ === true/);
+  assert.match(source, /nextFrame\.src = frameDirect \? frameTaskboardUrl : "about:blank"/);
+  assert.match(source, /frameDirect \? taskboardUrl\.origin : "null"/);
+  assert.match(source, /if \(!frameDirect\) await requestHostLoadFrame/);
+  assert.match(source, /if \(frameDirect && message\.type === "taskboard:ready"\)/);
 });
 
 test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
