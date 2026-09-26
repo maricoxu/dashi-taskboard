@@ -32,7 +32,7 @@
   const HOST_HEARTBEAT_MAX_AGE_MS = 8_000;
   const MACOS_TITLEBAR_SAFE_LEFT = 80;
   const FRAME_REFRESH_PARAM = "__codex_taskboard_refresh";
-  const PLUGIN_LABELS = ["插件", "plugins"];
+  const EXPLORE_LABELS = ["探索", "explore"];
   const NATIVE_PAGE_LABELS = [
     "新建任务",
     "新聊天",
@@ -92,6 +92,7 @@
   let pendingThreadCreation = null;
   let lastNativeThreadId = "";
   let lastNativeProjectId = "";
+  let currentCodexUserId = null;
   let suspendedNativeBrowserPanel = null;
   let active = false;
   let destroyed = false;
@@ -185,6 +186,10 @@
         visibility: hidden !important;
         pointer-events: none !important;
       }
+      [${HIDDEN_ATTRIBUTE}="true"] nav[data-app-navigation-rail] {
+        visibility: visible !important;
+        pointer-events: auto !important;
+      }
       [${NATIVE_SELECTED_ATTRIBUTE}="true"] {
         background-color: transparent !important;
       }
@@ -271,20 +276,12 @@
   }
 
   function findReferenceButton() {
-    const scroll = document.querySelector("[data-app-action-sidebar-scroll]");
-    if (!scroll) return null;
-    const buttons = Array.from(scroll.querySelectorAll("button"));
-    const plugin = buttons.find((button) => buttonMatches(button, PLUGIN_LABELS));
-    if (plugin?.parentElement) return plugin;
-
-    const firstSection = scroll.querySelector("[data-app-action-sidebar-section]");
-    const sectionTop = firstSection?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
-    const groups = Array.from(scroll.querySelectorAll("div")).filter((element) => {
-      const directButtons = Array.from(element.children).filter((child) => child.tagName === "BUTTON");
-      return directButtons.length >= 3 && element.getBoundingClientRect().top < sectionTop;
-    });
-    const group = groups.sort((left, right) => right.children.length - left.children.length)[0];
-    return Array.from(group?.children || []).filter((child) => child.tagName === "BUTTON").at(-1) || null;
+    const rail = document.querySelector("nav[data-app-navigation-rail]");
+    if (!rail) return null;
+    return Array.from(rail.querySelectorAll("button")).find((button) => (
+      button.getAttribute(OWNED_ATTRIBUTE) !== "true"
+      && buttonMatches(button.querySelector(".sr-only"), EXPLORE_LABELS)
+    )) || null;
   }
 
   function replaceEntryIcon(button) {
@@ -307,14 +304,15 @@
     button.id = ENTRY_ID;
     button.type = "button";
     button.removeAttribute("disabled");
+    button.removeAttribute("aria-haspopup");
     button.removeAttribute("aria-expanded");
     button.removeAttribute("aria-controls");
     button.removeAttribute("aria-describedby");
     button.removeAttribute("data-state");
     button.setAttribute(OWNED_ATTRIBUTE, "true");
     button.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"));
-    entryLabel = button.querySelector(".text-fade-truncate")
-      || Array.from(button.querySelectorAll("span")).find((node) => buttonMatches(node, PLUGIN_LABELS));
+    button.querySelectorAll("span.absolute.end-0.top-0").forEach((node) => node.remove());
+    entryLabel = button.querySelector(".sr-only");
     syncEntryText(button);
     replaceEntryIcon(button);
     button.addEventListener("click", (event) => {
@@ -335,6 +333,9 @@
 
   function syncEntryState() {
     if (!entry) return;
+    if (entry.hasAttribute("data-selected") !== active) {
+      entry.toggleAttribute("data-selected", active);
+    }
     if (active && entry.getAttribute("aria-current") !== "page") {
       entry.setAttribute("aria-current", "page");
     } else if (!active && entry.hasAttribute("aria-current")) {
@@ -348,8 +349,8 @@
     const reference = findReferenceButton();
     if (!reference?.parentElement) return;
     if (!entry) entry = createEntry(reference);
-    if (entry.parentElement !== reference.parentElement || entry.previousElementSibling !== reference) {
-      reference.after(entry);
+    if (entry.parentElement !== reference.parentElement || entry.nextElementSibling !== reference) {
+      reference.before(entry);
     }
     syncEntryState();
   }
@@ -371,28 +372,34 @@
   function findPageMount() {
     const frameHost = findPageHost();
     const viewport = frameHost?.closest?.("[data-app-shell-main-content-layout]");
-    const surface = viewport?.parentElement;
-    if (!frameHost || !viewport || !surface || !surface.closest("main")) return null;
-    return { frameHost, surface };
+    const surface = viewport?.closest("[data-app-shell-workspace-row]");
+    const rail = surface?.querySelector("nav[data-app-navigation-rail]");
+    if (!frameHost || !viewport || !surface || !rail) return null;
+    return { frameHost, surface, rail };
   }
 
   function muteNativeSelection() {
     if (!active) return;
-    document.querySelectorAll('aside nav[role="navigation"] [aria-current]')
+    document.querySelectorAll('aside nav[role="navigation"] [aria-current], nav[data-app-navigation-rail] :is([aria-current], [data-selected])')
       .forEach((node) => {
         if (node === entry || node.closest(`#${ENTRY_ID}`)) return;
         if (!mutedNativeSelections.has(node)) {
-          mutedNativeSelections.set(node, node.getAttribute("aria-current"));
+          mutedNativeSelections.set(node, {
+            ariaCurrent: node.getAttribute("aria-current"),
+            selected: node.getAttribute("data-selected"),
+          });
         }
         node.removeAttribute("aria-current");
+        node.removeAttribute("data-selected");
         node.setAttribute(NATIVE_SELECTED_ATTRIBUTE, "true");
       });
   }
 
   function restoreNativeSelection() {
-    mutedNativeSelections.forEach((ariaCurrent, node) => {
+    mutedNativeSelections.forEach(({ ariaCurrent, selected }, node) => {
       if (!node.isConnected) return;
-      node.setAttribute("aria-current", ariaCurrent);
+      if (ariaCurrent !== null) node.setAttribute("aria-current", ariaCurrent);
+      if (selected !== null) node.setAttribute("data-selected", selected);
       node.removeAttribute(NATIVE_SELECTED_ATTRIBUTE);
     });
     mutedNativeSelections.clear();
@@ -440,11 +447,11 @@
 
   function requestNativeFetch(path, body) {
     const bridge = window.electronBridge;
-    if (!bridge || typeof bridge.sendMessageFromView !== "function") return Promise.resolve(null);
+    if (!bridge || typeof bridge.sendMessageFromView !== "function") return Promise.resolve(undefined);
     return new Promise((resolve) => {
       const requestId = `taskboard-native-fetch-${crypto.randomUUID()}`;
       let settled = false;
-      const finish = (value = null) => {
+      const finish = (value) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
@@ -459,13 +466,17 @@
           || message.type !== "fetch-response"
           || message.requestId !== requestId
         ) return;
+        if (!Number.isInteger(message.status) || message.status < 200 || message.status >= 300) {
+          finish(undefined);
+          return;
+        }
         try {
           finish(JSON.parse(message.bodyJsonString || "null"));
         } catch (_) {
-          finish();
+          finish(undefined);
         }
       };
-      const timeout = window.setTimeout(finish, 1_000);
+      const timeout = window.setTimeout(() => finish(undefined), 1_000);
       window.addEventListener("message", onMessage);
       try {
         bridge.sendMessageFromView({
@@ -476,7 +487,7 @@
           body: JSON.stringify(body),
         });
       } catch (_) {
-        finish();
+        finish(undefined);
       }
     });
   }
@@ -495,8 +506,14 @@
       (Array.isArray(bootstrap?.globalStateEntries) ? bootstrap.globalStateEntries : [])
         .map((entry) => [entry?.key, entry?.value]),
     );
+    const [currentLocalProjects, currentRemoteProjects] = await Promise.all([
+      requestNativeFetch("get-global-state", { key: "local-projects" }),
+      requestNativeFetch("get-global-state", { key: "remote-projects" }),
+    ]);
     const metadata = new Map();
-    const localProjects = entries.get("local-projects");
+    const localProjects = currentLocalProjects === undefined
+      ? entries.get("local-projects")
+      : currentLocalProjects?.value;
     if (localProjects && typeof localProjects === "object" && !Array.isArray(localProjects)) {
       Object.entries(localProjects).forEach(([projectId, project]) => {
         const id = projectId.trim();
@@ -511,7 +528,9 @@
         });
       });
     }
-    const remoteProjects = entries.get("remote-projects");
+    const remoteProjects = currentRemoteProjects === undefined
+      ? entries.get("remote-projects")
+      : currentRemoteProjects?.value;
     if (Array.isArray(remoteProjects)) {
       remoteProjects.forEach((project) => {
         const id = typeof project?.id === "string" ? project.id.trim() : "";
@@ -534,8 +553,14 @@
   }
 
   async function activeNativeWorkspaceRoots() {
-    const roots = (await requestNativeFetch("active-workspace-roots", {}))?.roots;
-    return Array.isArray(roots) ? roots.filter((root) => typeof root === "string") : [];
+    const response = await requestNativeFetch("active-workspace-roots", {});
+    const roots = response?.roots;
+    // Keep an unavailable endpoint distinct from a successful response with no
+    // workspace roots. The latter must not be treated as a confirmed switch.
+    return {
+      available: Array.isArray(roots),
+      roots: Array.isArray(roots) ? roots.filter((root) => typeof root === "string") : [],
+    };
   }
 
   function normalizeNativeRootPath(value) {
@@ -547,6 +572,22 @@
       || (normalizedSlashes.startsWith("/") ? "/" : normalizedSlashes);
     if (!windowsPath || !/^[A-Za-z]:/.test(withoutTrailingSlash)) return withoutTrailingSlash;
     return `${withoutTrailingSlash[0].toLowerCase()}${withoutTrailingSlash.slice(1)}`;
+  }
+
+  async function canonicalNativeRootPaths(roots) {
+    const normalizedRoots = roots.map((root) => normalizeNativeRootPath(root));
+    const response = await requestNativeFetch("workspace-root-options", {
+      hostId: "local",
+      canonicalizeRoots: roots,
+    });
+    const canonicalPathByRoot = response?.canonicalPathByRoot;
+    if (!canonicalPathByRoot || typeof canonicalPathByRoot !== "object") return normalizedRoots;
+    const canonicalRoots = roots.map((root) => (
+      typeof canonicalPathByRoot[root] === "string"
+        ? normalizeNativeRootPath(canonicalPathByRoot[root])
+        : ""
+    ));
+    return canonicalRoots.every(Boolean) ? canonicalRoots : normalizedRoots;
   }
 
   function readCodexProjects(metadata = codexProjectMetadata) {
@@ -590,11 +631,14 @@
   }
 
   async function captureHostContext() {
+    currentCodexUserId = null;
     const todoProgress = nativeTodoProgress();
-    const [selectedProjectId, projectMetadata] = await Promise.all([
+    const [selectedProjectId, projectMetadata, currentUser] = await Promise.all([
       selectedNativeProjectId(),
       readCodexProjectMetadata(),
+      requestHost("read-current-user"),
     ]);
+    currentCodexUserId = typeof currentUser.userId === "string" ? currentUser.userId : "";
     codexProjectMetadata = projectMetadata;
     if (selectedProjectId) lastNativeProjectId = selectedProjectId;
     let projects = readCodexProjects(projectMetadata);
@@ -640,7 +684,7 @@
   function titlebarLeftInset() {
     if (!/Macintosh|Mac OS X/.test(navigator.userAgent)) return 0;
     if (nativeSidebarCollapsed()) return MACOS_TITLEBAR_SAFE_LEFT;
-    const surfaceLeft = findPageMount()?.surface.getBoundingClientRect().left;
+    const surfaceLeft = findPageMount()?.rail.getBoundingClientRect().right;
     if (!Number.isFinite(surfaceLeft)) return 0;
     return Math.max(0, Math.ceil(MACOS_TITLEBAR_SAFE_LEFT - surfaceLeft));
   }
@@ -747,19 +791,17 @@
   }
 
   function readCodexUser() {
-    const avatar = Array.from(document.querySelectorAll("img"))
-      .find((image) => image.src.includes("cdn.auth0.com/avatars/"));
-    const profileButton = avatar?.closest("button")
-      || Array.from(document.querySelectorAll('button[aria-haspopup="menu"]')).find((button) => (
-        normalizedLabel(button.getAttribute("aria-label")).includes("profile")
-        || normalizedLabel(button.getAttribute("aria-label")).includes("个人资料")
-      ));
+    const profileButton = Array.from(document.querySelectorAll('button[aria-haspopup="menu"]')).find((button) => (
+      normalizedLabel(button.getAttribute("aria-label")).includes("profile")
+      || normalizedLabel(button.getAttribute("aria-label")).includes("个人资料")
+    ));
     const name = profileButton?.textContent?.replace(/\s+/g, " ").trim();
-    if (!name) return null;
+    if (currentCodexUserId === null || !name) return null;
+    const avatar = profileButton.querySelector("img");
     const avatarUrl = avatar?.currentSrc || avatar?.src || null;
     return {
       type: "user",
-      id: userIdFromName(name),
+      id: currentCodexUserId || userIdFromName(name),
       name,
       avatarUrl,
     };
@@ -1005,9 +1047,20 @@
   async function nativeProjectContext() {
     const bootstrap = await window.electronBridge?.getInitialSidebarBootstrap?.();
     const entries = bootstrap?.globalStateEntries ?? [];
-    const localProjects = entries.find((entry) => entry.key === "local-projects")?.value ?? {};
+    const currentLocalProjects = await requestNativeFetch(
+      "get-global-state",
+      { key: "local-projects" },
+    );
+    const localProjects = currentLocalProjects === undefined
+      ? entries.find((entry) => entry.key === "local-projects")?.value
+      : currentLocalProjects?.value;
+    const projectEntries = localProjects
+      && typeof localProjects === "object"
+      && !Array.isArray(localProjects)
+      ? Object.entries(localProjects)
+      : [];
     return {
-      projects: Object.entries(localProjects).flatMap(([id, project]) => (
+      projects: projectEntries.flatMap(([id, project]) => (
         project && Array.isArray(project.rootPaths)
           ? [{ ...project, id }]
           : []
@@ -1018,12 +1071,22 @@
   async function resolveNativeProject(requestedProjectId, workspacePath) {
     const context = await nativeProjectContext();
     const normalizedWorkspacePath = normalizeNativeRootPath(workspacePath);
-    const project = context.projects.find((candidate) => (
-      candidate.id === requestedProjectId
-      || candidate.rootPaths.some((root) => (
-        normalizeNativeRootPath(root) === normalizedWorkspacePath
-      ))
-    )) ?? null;
+    let project = context.projects.find((candidate) => candidate.id === requestedProjectId) ?? null;
+    if (!project && normalizedWorkspacePath) {
+      const projectRoots = context.projects.flatMap((candidate) => candidate.rootPaths.flatMap((root) => (
+        typeof root === "string" && normalizeNativeRootPath(root)
+          ? [{ project: candidate, root }]
+          : []
+      )));
+      const canonicalRoots = await canonicalNativeRootPaths([
+        workspacePath,
+        ...projectRoots.map(({ root }) => root),
+      ]);
+      const matchingRootIndex = canonicalRoots.slice(1).findIndex((root) => (
+        root === canonicalRoots[0]
+      ));
+      if (matchingRootIndex >= 0) project = projectRoots[matchingRootIndex].project;
+    }
     const targetRoot = normalizedWorkspacePath ? workspacePath : project?.rootPaths[0];
     return project && typeof targetRoot === "string" && normalizeNativeRootPath(targetRoot)
       ? { projectId: project.id, targetRoot }
@@ -1045,18 +1108,24 @@
     }
   }
 
-  async function waitForNativeProject(targetRoot) {
+  async function waitForNativeProject(targetRoot, expectedProjectId) {
     const deadline = Date.now() + 8_000;
-    const normalizedTargetRoot = normalizeNativeRootPath(targetRoot);
     while (Date.now() < deadline) {
-      const [projectId, activeRoots] = await Promise.all([
+      const [projectId, activeWorkspace] = await Promise.all([
         selectedNativeProjectId(),
         activeNativeWorkspaceRoots(),
       ]);
-      if (
-        projectId
-        && normalizeNativeRootPath(activeRoots[0]) === normalizedTargetRoot
-      ) return projectId;
+      if (projectId && projectId === expectedProjectId) {
+        // Some Codex desktop builds no longer expose active-workspace-roots.
+        // A confirmed selected project is still safe when that endpoint is unavailable;
+        // keep rejecting an explicitly reported, mismatched workspace root.
+        if (!activeWorkspace.available) return projectId;
+        const [canonicalTargetRoot, ...canonicalActiveRoots] = await canonicalNativeRootPaths([
+          targetRoot,
+          ...activeWorkspace.roots,
+        ]);
+        if (canonicalActiveRoots.some((root) => root === canonicalTargetRoot)) return projectId;
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 80));
     }
     throw new Error(hostText(
@@ -1111,12 +1180,12 @@
             "The target project or worktree is not mapped in Codex",
           ));
         }
-        const { targetRoot } = target;
+        const { projectId, targetRoot } = target;
         bridge.sendMessageFromView({
           type: "electron-add-new-workspace-root-option",
           root: targetRoot,
         });
-        lastNativeProjectId = await waitForNativeProject(targetRoot);
+        lastNativeProjectId = await waitForNativeProject(targetRoot, projectId);
       }
 
       closeTaskboard(false);
@@ -1196,6 +1265,7 @@
               item: response.item,
               items: response.items,
               quota: response.quota,
+              idleReason: response.idleReason,
               policy: response.policy,
             },
       });
@@ -1223,17 +1293,31 @@
 
   async function handleAttachmentOpen(payload) {
     try {
-      await requestHost("open-attachment", {
+      const result = await requestHost("open-attachment", {
         attachmentId: payload?.attachmentId,
         filename: payload?.filename,
+        operation: payload?.operation,
+      });
+      postToFrame({
+        type: "taskboard:attachment-local-path",
+        payload: {
+          attachmentId: payload?.attachmentId,
+          filename: payload?.filename,
+          localPath: result.localPath ?? null,
+        },
       });
     } catch (_) {
+      postToFrame({
+        type: "taskboard:attachment-local-path",
+        payload: { attachmentId: payload?.attachmentId, filename: payload?.filename, localPath: null },
+      });
+      if (payload?.operation === "local-path") return;
       postToFrame({
         type: "taskboard:attachment-open-error",
         payload: {
           error: hostText(
-            "无法在 Finder 中显示附件，请重试。",
-            "Could not reveal the attachment in Finder. Try again.",
+            "无法显示附件所在位置，请重新打开附件后重试。",
+            "Could not show the attachment location. Open the attachment again and retry.",
           ),
         },
       });
@@ -1770,10 +1854,14 @@
 
   function mountActivePage() {
     if (!active) return false;
+    if (document.querySelector('nav[aria-label="Settings"], nav[aria-label="设置"]')) {
+      closeTaskboard(false);
+      return false;
+    }
     if (!page) page = createPage();
     const mount = findPageMount();
     if (!mount) return false;
-    const { surface } = mount;
+    const { surface, rail } = mount;
 
     let remounted = false;
     if (page.parentElement !== surface) {
@@ -1787,6 +1875,7 @@
       }
     }
     surface.setAttribute(HOST_ATTRIBUTE, "true");
+    page.style.left = `${rail.getBoundingClientRect().right - surface.getBoundingClientRect().left}px`;
     Array.from(surface.children).forEach((child) => {
       if (child !== page && child.getAttribute(OWNED_ATTRIBUTE) !== "true") {
         child.setAttribute(HIDDEN_ATTRIBUTE, "true");
@@ -1830,8 +1919,17 @@
   }
 
   function isNativePageNavigation(target) {
+    const settingsControl = target?.closest?.("button,a,[role='button'],[role='menuitem']");
+    const settingsLabel = settingsControl?.cloneNode(true);
+    settingsLabel?.querySelectorAll("span.ms-2.shrink-0.text-xs.text-codex-description")
+      .forEach((shortcut) => shortcut.remove());
+    if (buttonMatches(settingsLabel, ["设置", "settings"])) return true;
+
     const clickable = target?.closest?.("button,a,[role='button'],[data-app-action-sidebar-thread-id]");
     if (!clickable || clickable === entry || clickable.closest(`#${ENTRY_ID}`)) return false;
+    if (clickable.closest("nav[data-app-navigation-rail]") && clickable.hasAttribute("data-sidebar-destination")) {
+      return true;
+    }
     if (!clickable.closest("aside nav[role='navigation']")) return false;
     if (clickable.hasAttribute("data-app-action-sidebar-section-toggle")) return false;
     if (buttonMatches(clickable, NATIVE_PAGE_LABELS)) return true;
@@ -1886,6 +1984,7 @@
         "data-app-action-sidebar-thread-active",
         "aria-label",
         "aria-current",
+        "data-selected",
       ],
     });
     hostContextTimer = window.setInterval(postHostContext, 1_000);

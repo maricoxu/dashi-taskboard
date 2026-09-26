@@ -212,7 +212,7 @@ To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the us
 
 LAN mode has no account authentication: anyone on the trusted local network who can reach the URL can read and write the taskboard. Public internet and cloud deployment require an authenticated deployment boundary.
 
-For a reverse tunnel that connects to the local listener, set `CODEX_TASKBOARD_TRUSTED_ORIGINS` to the tunnel's public HTTPS origin, for example `https://board.example.test`. Multiple origins are comma-separated. The variable cannot be empty, and duplicate origins (including normalized forms such as a trailing slash or default HTTPS port) are rejected at startup. Entries must otherwise be exact HTTPS origins; paths, queries, fragments, credentials, and wildcards are rejected. A reverse proxy or tunnel must preserve a loopback socket connection, rewrite `Host` to a local/private host, preserve any `Origin` supplied by the browser, and add that exact public HTTPS origin only when the header is absent, including for `GET` and `HEAD`; forwarded headers are not used for this decision. Configured trusted origins can use ordinary Taskboard HTTP and realtime endpoints, but device-local capability routes remain unavailable even though the tunnel socket is loopback. Requests from direct local or private-LAN origins keep their existing behavior.
+For a reverse tunnel that connects to the local listener, set `CODEX_TASKBOARD_TRUSTED_ORIGINS` to the tunnel's public HTTPS origin, for example `https://board.example.test`. Multiple origins are comma-separated. The variable cannot be empty, and duplicate origins (including normalized forms such as a trailing slash or default HTTPS port) are rejected at startup. Entries must otherwise be exact HTTPS origins; paths, queries, fragments, credentials, and wildcards are rejected. A reverse proxy or tunnel can preserve that public `Host`: Taskboard derives its canonical HTTPS origin and requires an exact configured match. If the browser supplies an `Origin`, that header is validated independently; the proxy must preserve it rather than fabricate one. Forwarded headers are not used for either decision. Configured public hosts and trusted origins can use ordinary Taskboard HTTP and realtime endpoints, but device-local capability routes remain unavailable even though the tunnel socket is loopback. Requests using only direct local or private-LAN hosts and origins keep their existing behavior.
 
 ## Share through Cloudflare
 
@@ -233,3 +233,10 @@ This runs TypeScript checking, a production frontend build, the component tests,
 ## Task Markdown
 
 Task descriptions and comments support GFM, including tables and task lists. Fenced `mermaid` blocks are rendered as read-only diagrams after the viewer loads; the diagram source remains available when rendering fails. Markdown HTML comments, such as `<!-- trace-analysis:v1 ... -->`, are hidden from the rendered document. Raw HTML is not enabled.
+
+## Acknowledgements
+
+Thanks to [Lingshan21](https://github.com/Lingshan21) for:
+
+- The parent-based project completion proposal and initial implementation in [#371](https://github.com/chuspeeism/dashi-taskboard/pull/371), which weighted top-level parent issues equally regardless of how many children each had.
+- The priority organization proposal and initial implementation in [#372](https://github.com/chuspeeism/dashi-taskboard/pull/372). The final board sorting controls were adapted to the maintainer's requirements instead of adopting the proposed priority swimlanes.

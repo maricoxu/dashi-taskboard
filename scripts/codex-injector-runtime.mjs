@@ -20,6 +20,7 @@ function parseHostRequest(payload, parseAutomationRequest) {
   ) ? request.id : null;
   if (!id) return { id: null, request: null, error: HOST_REQUEST_ERROR };
   if (request.action === "ensure") return { id, request, error: null };
+  if (request.action === "read-current-user") return { id, request, error: null };
   if (
     request.action === "load-frame"
     && typeof request.frameName === "string"
@@ -37,6 +38,7 @@ function parseHostRequest(payload, parseAutomationRequest) {
   }
   if (
     request.action === "open-attachment"
+    && (request.operation === undefined || request.operation === "local-path" || request.operation === "reveal")
     && typeof request.attachmentId === "string"
     && /^[a-f0-9-]{36}$/i.test(request.attachmentId)
     && typeof request.filename === "string"
@@ -148,6 +150,8 @@ export async function handleHostBindingPayload(params, handlers) {
     let result;
     if (parsed.request.action === "ensure") {
       result = await handlers.ensure();
+    } else if (parsed.request.action === "read-current-user") {
+      result = await handlers.readCurrentUser();
     } else if (parsed.request.action === "load-frame") {
       result = await handlers.loadFrame(parsed.request);
     } else if (parsed.request.action === "open-external") {
