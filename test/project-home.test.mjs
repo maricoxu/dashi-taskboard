@@ -8,7 +8,6 @@ const styles = await readFile(new URL("../web/src/styles.css", import.meta.url),
 const editorSource = await readFile(new URL("../web/src/components/TaskEditor.tsx", import.meta.url), "utf8");
 const detailSource = await readFile(new URL("../web/src/components/TaskDetail.tsx", import.meta.url), "utf8");
 const labelPickerSource = await readFile(new URL("../web/src/components/LabelPicker.tsx", import.meta.url), "utf8");
-const pendingAttachmentsSource = await readFile(new URL("../web/src/components/PendingAttachments.tsx", import.meta.url), "utf8");
 const labelsSource = await readFile(new URL("../web/src/labels.ts", import.meta.url), "utf8");
 
 test("the project switcher merges live Codex projects with persisted Taskboard projects", () => {
@@ -60,14 +59,15 @@ test("the selected project exposes the current board surfaces", () => {
   assert.match(styles, /\.workspace-header \{[\s\S]*?border-bottom: var\(--border-hairline\) solid var\(--border\)/);
 });
 
-test("new issues stage attachments in the composer and upload them after creation", () => {
+test("new issues insert attachments into the description and upload them after creation", () => {
   assert.match(editorSource, /type="file"[\s\S]*?multiple/);
-  assert.match(editorSource, /<PendingAttachments[\s\S]*?uploadLabel=\{text\("保存后上传", "Upload after saving"\)\}/);
-  assert.match(pendingAttachmentsSource, /className="composer-attachment-list"/);
+  assert.match(editorSource, /<InlineMediaComposer[\s\S]*?allowAttachments/);
+  assert.match(editorSource, /descriptionComposerRef\.current\?\.addFiles\(event\.currentTarget\.files\)/);
+  assert.match(editorSource, /inlineMediaFiles\(descriptionSegments\)/);
   assert.match(appSource, /Promise\.allSettled/);
-  assert.match(appSource, /uploadAttachment\(saved\.id, file, "attachment"\)/);
+  assert.match(appSource, /uploadAttachment\(saved\.id, file\.file, "attachment"\)/);
   assert.match(appSource, /uploadAttachment\(saved\.id, image\.file, "inline"\)/);
-  assert.match(appSource, /zh: `\$\{failedAttachments\} 个附件`[\s\S]*?以下内容写入失败/);
+  assert.match(appSource, /resolveInlineAttachmentMarkdown\([\s\S]*?resolveInlineMediaMarkdown\(/);
 });
 
 test("the issue composer includes Linear-style labels and scheduling", () => {
@@ -123,7 +123,8 @@ test("the app omits the old navigation and keeps the embedded draggable header r
 });
 
 test("realtime updates remain active on the project home and reconcile after reconnecting", () => {
-  assert.match(appSource, /useEffect\(\(\) => \{\s*const source = new EventSource\(resolveTaskboardUrl\("\/api\/events"\)\)/);
+  assert.match(appSource, /if \(isEmbeddedHost\(\)\) \{[\s\S]*?setInterval\(refresh, 2_500\)/);
+  assert.match(appSource, /const source = new EventSource\(resolveTaskboardUrl\("\/api\/events"\)\)/);
   assert.match(appSource, /event\.type\.startsWith\("task\."\)[\s\S]*?scheduleRefresh\(\{ projects: true, tasks: affectsSelectedProject \}\)/);
   assert.match(appSource, /source\.onopen = \(\) => \{[\s\S]*?scheduleRefresh\(\{ projects: true, tasks: Boolean\(selectedProjectId\) \}\)/);
 });
