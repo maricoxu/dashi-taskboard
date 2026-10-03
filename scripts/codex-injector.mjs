@@ -3804,6 +3804,10 @@ async function main() {
     const previousManagedCodex = exitedManagedCodex;
     exitedManagedCodex = null;
     try {
+      if (options.open && !hasOpenPending()) {
+        openRequestGeneration += 1;
+        console.log(JSON.stringify({ openTaskboardAfterCodexRecovery: "update" }));
+      }
       await stopManagedCodex(updateReplacement.process);
       managedCodex = null;
       managedCodexBuild = null;
@@ -4056,6 +4060,16 @@ async function main() {
         if (await recoverManagedCodexAfterUpdate()) {
           if (idleAfterNormalExit) continue;
         } else {
+          let codexReplacementPresent = false;
+          if (!hasOpenPending() && !options.cdpPipe) {
+            try {
+              codexReplacementPresent = codexAppProcesses(options.appPath).length > 0;
+            } catch (_) {}
+          }
+          if (codexReplacementPresent && options.open && !hasOpenPending()) {
+            openRequestGeneration += 1;
+            console.log(JSON.stringify({ openTaskboardAfterCodexRecovery: "replacement" }));
+          }
           if (!hasOpenPending()) continue;
           const launchRequestGeneration = openRequestGeneration;
           try {

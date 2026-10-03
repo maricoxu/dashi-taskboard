@@ -338,6 +338,8 @@ test("managed private-CDP spawn failures are bounded without changing the launch
   );
   assert.match(source, /if \(!hasOpenPending\(\)\) continue;/);
   assert.match(source, /idleAfterNormalExit = true;\s*console\.error\(`Waiting for Codex launch:/);
+  assert.match(source, /codexReplacementPresent = codexAppProcesses\(options\.appPath\)\.length > 0/);
+  assert.match(source, /openTaskboardAfterCodexRecovery: "replacement"/);
 });
 
 test("the package injection command remains resident for tab-triggered recovery", () => {
