@@ -12,6 +12,30 @@ taskctl comment add --help
 taskctl comment update --help
 ```
 
+## Source launcher CLI (macOS)
+
+The source launcher and packaged app are different installations. A source-only Mac normally has no `/Applications/Codex Taskboard.app/Contents/Resources/bin/taskctl`. Its CLI already exists at `<checkout>/cli/taskctl.mjs`; no global install is needed.
+
+When no CLI/URL was injected and the source launcher is the selected installation, read its exact `source-root` record. Use the resulting path as data, never as a shell script. The following read-only check works from any current directory and requires Node.js 22.5+:
+
+```bash
+(
+  set -eu
+  TASKBOARD_SOURCE_ROOT="$(sed -n '1p' '/Applications/Codex Taskboard Source.app/Contents/Resources/source-root')"
+  TASKBOARD_RUNTIME_FILE="${CODEX_TASKBOARD_RUNTIME_FILE:-$TASKBOARD_SOURCE_ROOT/.data/launcher-runtime.json}"
+  test -f "$TASKBOARD_SOURCE_ROOT/cli/taskctl.mjs"
+  test -f "$TASKBOARD_RUNTIME_FILE"
+  node "$TASKBOARD_SOURCE_ROOT/cli/taskctl.mjs" \
+    --runtime-file "$TASKBOARD_RUNTIME_FILE" project list --json
+)
+```
+
+For issue work, replace `project list` with `issue get ISSUE_ID`, `comment list ISSUE_ID`, or `attachment list --task ISSUE_ID`, preserving the issue identifier and the same CLI/runtime paths. If the user identifies a checkout directly, use that path instead of reading the launcher record. Never infer the service from a different checkout's `.data` directory.
+
+`--runtime-file FILE` is a global CLI option that makes the descriptor required. A missing/unreadable file returns `SERVICE_UNAVAILABLE`; an invalid descriptor returns `INVALID_RESPONSE`. Keep explicitly supplied `CODEX_TASKBOARD_URL` values: the CLI gives them precedence over runtime files. Do not print the descriptor, copy its tokenized URL into notes, or commit it. If the selected runtime is unavailable, restore that launcher through the setup workflow before retrying.
+
+An `npm link` installation only adds a shortcut to this same CLI. It is not required for the command above and is not evidence of which board is active. Another Mac uses its own checkout path and runtime file, even when the Git revision is identical.
+
 ## Terminology: local companion
 
 **Companion** here is a product term for the **device-local loopback HTTP service** that `taskctl` talks to in cloud mode. It applies Basic Authentication, stores device-only project path mappings, and keeps Codex/Git/Skill/MCP capabilities on the machine. It is not a chat persona and not a separate public “companion product API”.
