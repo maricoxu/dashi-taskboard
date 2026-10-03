@@ -67,8 +67,17 @@ npm run source-launcher:install
 ```bash
 launchctl print "gui/$UID/com.xuyehua.codex-taskboard-source"
 tail -f "$HOME/Library/Logs/Codex Taskboard/codex-taskboard-source.log"
-taskctl project list --json
 ```
+
+### 源码版 taskctl 入口
+
+源码启动器与正式打包版的 App 名称不同。只安装 `Codex Taskboard Source.app` 时，正式版的 `/Applications/Codex Taskboard.app/Contents/Resources/bin/taskctl` 不存在是正常的；源码 CLI 位于仓库的 `cli/taskctl.mjs`。
+
+按 [Source launcher CLI](../skills/manage-taskboard/references/cli.md#source-launcher-cli-macos) 的命令，从启动器记录的源码路径调用 CLI。命令显式指定同一仓库的 runtime 文件，从任意工作目录运行都不依赖 `npm link` 或全局 `PATH`。若 runtime 文件不存在或服务不可用，先恢复源码启动器，不要改用默认端口或另一套数据库。
+
+`skills/manage-taskboard` 已包含此识别规则。另一台 Mac 拉取包含修复的提交后，让已安装 Skill 指向该机器检出的 `skills/manage-taskboard`，再新开一个任务加载更新后的规则。若原先是复制安装的 Skill，也要同步这份目录；已有符号链接指向该检出目录时会随 Git 更新生效。
+
+两台 Mac 只共享代码和 Skill。每台机器的 `source-root`、`.data/launcher-runtime.json` 和 `npm link` 都是本机配置，不应从另一台直接复制。需要迁移议题数据时仍使用 Taskboard Handoff。
 
 调试内嵌面板时，observer 可单独写入新日志文件：
 

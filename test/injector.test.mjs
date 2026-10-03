@@ -56,6 +56,8 @@ test("heartbeat recovery reuses one isolated context and does not close a busy r
   assert.match(source, /Runtime\.executionContextsCleared/);
   assert.match(heartbeatSource, /heartbeatInFlight/);
   assert.match(heartbeatSource, /heartbeat-timeout/);
+  assert.match(heartbeatSource, /if \(heartbeatInFlight !== operation\) return;/);
+  assert.match(heartbeatSource, /if \(heartbeatInFlight === operation\) heartbeatInFlight = null;/);
   assert.doesNotMatch(heartbeatSource, /cdp\.close\(\)/);
 });
 
@@ -336,6 +338,8 @@ test("managed private-CDP spawn failures are bounded without changing the launch
   );
   assert.match(source, /if \(!hasOpenPending\(\)\) continue;/);
   assert.match(source, /idleAfterNormalExit = true;\s*console\.error\(`Waiting for Codex launch:/);
+  assert.match(source, /codexReplacementPresent = codexAppProcesses\(options\.appPath\)\.length > 0/);
+  assert.match(source, /openTaskboardAfterCodexRecovery: "replacement"/);
 });
 
 test("the package injection command remains resident for tab-triggered recovery", () => {
