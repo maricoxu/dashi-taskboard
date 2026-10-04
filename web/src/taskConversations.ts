@@ -9,6 +9,7 @@ import type {
 
 export interface TaskConversationItem {
   key: string;
+  taskId: string;
   projectId: string;
   kind: "native" | "local-ai" | "agent-session";
   agentSession?: AgentSession;
@@ -68,6 +69,7 @@ export function taskConversations(task: Task, aiThreads: AiChatThread[]) {
       const current = items.get(key);
       const next: TaskConversationItem = {
         key,
+        taskId: task.id,
         projectId: task.projectId,
         kind: "agent-session",
         agentSession: ref.agentSession,
@@ -90,6 +92,7 @@ export function taskConversations(task: Task, aiThreads: AiChatThread[]) {
     const current = items.get(key);
     const next: TaskConversationItem = {
       key,
+      taskId: task.id,
       projectId: task.projectId,
       kind: "native",
       title: ref.title || task.title,
@@ -123,6 +126,7 @@ export function taskConversations(task: Task, aiThreads: AiChatThread[]) {
     ].reduce(newerTimestamp);
     const candidate: TaskConversationItem = {
       key,
+      taskId: task.id,
       projectId: task.projectId,
       kind: "local-ai",
       title: thread.title || thread.origin.issueIdentifier || task.title,

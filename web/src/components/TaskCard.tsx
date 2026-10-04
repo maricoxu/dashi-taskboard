@@ -216,9 +216,11 @@ function ProcessingLabel({ processing }: { processing: TaskCardPresentation["pro
 }
 
 function ProcessingStatusRow({
+  taskId,
   presentation,
   onOpenConversation,
 }: {
+  taskId: string;
   presentation: TaskCardPresentation;
   onOpenConversation: (conversation: TaskConversationItem) => void;
 }) {
@@ -228,12 +230,11 @@ function ProcessingStatusRow({
       {running && <img className="task-processing-glyph" src={processingAnimation} alt="" aria-hidden="true" />}
       <ProcessingLabel processing={presentation.processing} />
       <span className="task-processing-spacer" aria-hidden="true" />
-      {presentation.conversations.length > 0 && (
-        <TaskConversationMenu
-          conversations={presentation.conversations}
-          onOpenConversation={onOpenConversation}
-        />
-      )}
+      <TaskConversationMenu
+        taskId={taskId}
+        conversations={presentation.conversations}
+        onOpenConversation={onOpenConversation}
+      />
     </div>
   );
 }
@@ -435,12 +436,8 @@ export function TaskCard({
     avatarUrl: task.creatorAvatarUrl,
   };
   const processingCard = task.status === "in_progress";
-  const supportsConversation = task.status === "in_progress"
-    || task.status === "in_review"
-    || task.status === "blocked"
-    || task.status === "done"
-    || task.status === "canceled";
-  const showsConversation = supportsConversation && presentation.conversations.length > 0;
+  const supportsConversation = task.status !== "backlog";
+  const showsConversation = supportsConversation;
   const showsInlineParticipants = variant === "main"
     && task.participants.length > 0;
   const image = showCover ? firstTaskImage(task) : null;
@@ -595,6 +592,7 @@ export function TaskCard({
           {!processingCard && showsConversation && <span className="card-properties-spacer" aria-hidden="true" />}
           {!processingCard && showsConversation && (
             <TaskConversationMenu
+              taskId={task.id}
               conversations={presentation.conversations}
               onOpenConversation={onOpenConversation}
             />
@@ -606,6 +604,7 @@ export function TaskCard({
         <>
           <ProcessingProgress presentation={presentation} />
           <ProcessingStatusRow
+            taskId={task.id}
             presentation={presentation}
             onOpenConversation={onOpenConversation}
           />

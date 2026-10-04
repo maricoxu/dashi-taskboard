@@ -2,6 +2,7 @@ import { fetchEmbeddedHost } from "./embeddedHost.mjs";
 
 const memoryStorage = new Map<string, string>();
 export const PROJECT_BOARD_DISPLAY_SETTINGS_KEY_PREFIX = "taskboard.project-board-display-settings.v3.";
+export const DEVICE_THREAD_PENDING_KEY = "taskboard.device-thread-pending.v1";
 const RETRY_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 5_000;
 let localStorageBackend: Storage | null = null;

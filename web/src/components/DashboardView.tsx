@@ -865,6 +865,7 @@ export function DashboardView({
                       <span className="task-processing-label">{text("正在处理…", "Processing…")}</span>
                     </span>
                     <TaskConversationMenu
+                      taskId={task.id}
                       conversations={presentations[task.id].conversations}
                       onOpenConversation={onOpenConversation}
                     />

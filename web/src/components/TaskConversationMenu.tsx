@@ -7,6 +7,7 @@ import { listenForMenuViewportChange, listenForOutsidePointerDown } from "../men
 import { ConversationIcon } from "./SemanticIcons";
 
 interface TaskConversationMenuProps {
+  taskId: string;
   conversations: TaskConversationItem[];
   onOpenConversation: (conversation: TaskConversationItem) => void;
 }
@@ -41,6 +42,7 @@ function conversationStatus(
 }
 
 export function TaskConversationMenu({
+  taskId,
   conversations,
   onOpenConversation,
 }: TaskConversationMenuProps) {
@@ -87,8 +89,6 @@ export function TaskConversationMenu({
     };
   }, [open]);
 
-  if (conversations.length === 0) return null;
-
   function stop(event: SyntheticEvent<HTMLElement>) {
     event.stopPropagation();
   }
@@ -99,7 +99,23 @@ export function TaskConversationMenu({
   }
 
   const multiple = conversations.length > 1;
-  const singleAgentSession = !multiple ? conversations[0].agentSession : undefined;
+  const hasConversations = conversations.length > 0;
+  const createConversation: TaskConversationItem = {
+    key: `create:${taskId}`,
+    taskId,
+    projectId: "",
+    kind: "native",
+    title: text("在此设备创建执行会话", "Create a session on this device"),
+    source: "task",
+    nativeThreadId: null,
+    threadBinding: null,
+    legacyLocalThreadId: null,
+    aiThreadId: null,
+    updatedAt: "",
+    currentRun: null,
+    latestTodo: null,
+  };
+  const singleAgentSession = hasConversations && !multiple ? conversations[0].agentSession : undefined;
   const singleAgentLabel = singleAgentSession ? agentPlatformLabel(singleAgentSession.platform) : "";
   return (
     <>
@@ -110,6 +126,8 @@ export function TaskConversationMenu({
         draggable={false}
         aria-label={multiple
           ? text(`查看 ${conversations.length} 个对话`, `View ${conversations.length} conversations`)
+          : !hasConversations
+            ? text("在此设备创建执行会话", "Create a session on this device")
           : singleAgentSession
             ? text(`复制 ${singleAgentLabel} 恢复命令`, `Copy ${singleAgentLabel} resume command`)
             : text(`打开对话 ${conversations[0].title}`, `Open conversation ${conversations[0].title}`)}
@@ -117,6 +135,8 @@ export function TaskConversationMenu({
         aria-expanded={multiple ? open : undefined}
         title={multiple
           ? text(`${conversations.length} 个对话`, `${conversations.length} conversations`)
+          : !hasConversations
+            ? text("在此设备创建执行会话", "Create a session on this device")
           : singleAgentSession
             ? `${singleAgentLabel}: ${sessionResumeCommand(singleAgentSession.platform, singleAgentSession.sessionId)}`
             : conversations[0].title}
@@ -125,11 +145,12 @@ export function TaskConversationMenu({
         onClick={(event) => {
           event.stopPropagation();
           if (multiple) setOpen((current) => !current);
-          else openConversation(conversations[0]);
+          else openConversation(hasConversations ? conversations[0] : createConversation);
         }}
       >
         <ConversationIcon color="currentColor" size={16} />
         {multiple && <span>+{conversations.length}</span>}
+        {!hasConversations && <span>+</span>}
         {singleAgentSession && <span>{singleAgentLabel}</span>}
       </button>
       {open && multiple && createPortal(

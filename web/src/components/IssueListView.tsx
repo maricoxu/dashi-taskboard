@@ -141,6 +141,7 @@ export function IssueListView({
                             </label>
                           )}
                           <TaskConversationMenu
+                            taskId={task.id}
                             conversations={presentations[task.id]?.conversations ?? []}
                             onOpenConversation={onOpenConversation}
                           />

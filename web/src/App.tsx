@@ -89,6 +89,7 @@ import {
 import { TaskFilterMenu, type TaskSort } from "./components/TaskFilterMenu";
 import {
   PROJECT_BOARD_DISPLAY_SETTINGS_KEY_PREFIX,
+  DEVICE_THREAD_PENDING_KEY,
   projectBoardDisplaySettingsStorageEntries,
   refreshProjectBoardDisplaySettingsStorage,
   taskboardStorage,
@@ -877,6 +878,11 @@ export function App() {
   const projectsRequestRef = useRef(0);
   const tasksRequestRef = useRef(0);
   const tasksRef = useRef<Task[]>([]);
+  const pendingDeviceThreadRef = useRef<{
+    taskId: string;
+    sourceThreadId: string | null;
+    target: CodexProjectIdentity;
+  } | null>(null);
   const undoSequenceRef = useRef(0);
   const undoStackRef = useRef<UndoOperation[]>([]);
   const undoInFlightRef = useRef(false);
@@ -1920,6 +1926,55 @@ export function App() {
       pendingAutomationRequestsRef.current.clear();
     };
   }, [embedded, host]);
+
+  useEffect(() => {
+    if (!pendingDeviceThreadRef.current) {
+      try {
+        const stored = JSON.parse(taskboardStorage.getItem(DEVICE_THREAD_PENDING_KEY) ?? "null");
+        if (
+          stored
+          && typeof stored.taskId === "string"
+          && typeof stored.target?.codexProjectId === "string"
+          && (stored.target.codexProjectKind === "local" || stored.target.codexProjectKind === "remote")
+          && typeof stored.target.codexHostId === "string"
+          && typeof stored.target.workspacePath === "string"
+        ) pendingDeviceThreadRef.current = stored;
+      } catch {}
+    }
+    const pending = pendingDeviceThreadRef.current;
+    if (!pending || !hostContext?.threadId || !hostContext.projectId) return;
+    const project = hostContext.projects?.find((candidate) => candidate.id === hostContext.projectId);
+    const workspacePath = hostContext.workspacePath || project?.workspacePath || "";
+    if (
+      !workspacePath
+      || hostContext.threadId === pending.sourceThreadId
+      || hostContext.projectId !== pending.target.codexProjectId
+      || (project?.projectKind ?? "local") !== pending.target.codexProjectKind
+      || (project?.hostId ?? "local") !== pending.target.codexHostId
+      || workspacePath !== pending.target.workspacePath
+    ) return;
+    const task = tasksRef.current.find((candidate) => candidate.id === pending.taskId);
+    if (!task) return;
+    const binding: CodexThreadBinding = {
+      threadId: hostContext.threadId,
+      codexProjectId: pending.target.codexProjectId,
+      codexProjectKind: pending.target.codexProjectKind,
+      codexHostId: pending.target.codexHostId,
+      workspacePath: pending.target.workspacePath,
+    };
+    pendingDeviceThreadRef.current = null;
+    taskboardStorage.removeItem(DEVICE_THREAD_PENDING_KEY);
+    void moveTaskRequest(task, "in_progress", undefined, binding, hostContext.threadId)
+      .then((bound) => {
+        setTasks((current) => sortTasks(current.map((candidate) => (
+          candidate.id === bound.id ? bound : candidate
+        ))));
+        setOpeningThreadTaskId(null);
+      })
+      .catch((error) => {
+        setActionError(errorMessage(error));
+      });
+  }, [hostContext, tasks]);
 
   useLayoutEffect(() => {
     if (!embedded || window.parent === window || !dragRegionRef.current) return;
@@ -3006,6 +3061,11 @@ export function App() {
   }
 
   function openTaskConversation(conversation: TaskConversationItem) {
+    if (conversation.key.startsWith("create:")) {
+      const task = tasksRef.current.find((candidate) => candidate.id === conversation.taskId);
+      if (task) void createDeviceThread(task);
+      return;
+    }
     if (conversation.kind === "agent-session" && conversation.agentSession) {
       const { platform, sessionId } = conversation.agentSession;
       const label = agentPlatformLabel(platform);
@@ -3027,6 +3087,104 @@ export function App() {
       openThread(conversation.threadBinding);
     } else if (conversation.legacyLocalThreadId) {
       openLegacyLocalThread(conversation.legacyLocalThreadId);
+    }
+  }
+
+  async function createDeviceThread(task: Task) {
+    if (!embedded || window.parent === window) {
+      setActionError(text(
+        "请在 Codex 内嵌 Taskboard 中创建当前设备会话。",
+        "Create a device session from the embedded Codex Taskboard.",
+      ));
+      return;
+    }
+    if (openingThreadTaskId) return;
+    const baseIdentity = projectCodexIdentities[task.projectId]?.codexProjectKind === "remote"
+      ? projectCodexIdentities[task.projectId]
+      : codexProjectContextForTaskProject(task.projectId);
+    if (!baseIdentity) {
+      setActionError(text(
+        "当前项目没有可用的 Codex 工作区。",
+        "The current project has no available Codex workspace.",
+      ));
+      return;
+    }
+    const target = baseIdentity.codexProjectKind === "remote"
+      ? remoteIdentityForTask(task, baseIdentity)
+      : baseIdentity;
+    if (!target) {
+      setActionError(text(
+        "当前 SSH worktree 没有可用的 Codex 项目映射。",
+        "The current SSH worktree has no available Codex project mapping.",
+      ));
+      return;
+    }
+    const workspacePath = task.developmentContext?.type === "worktree"
+      ? task.developmentContext.path
+      : target.workspacePath;
+    const targetBinding: CodexProjectIdentity = { ...target, workspacePath };
+    const pending = pendingDeviceThreadRef.current;
+    if (
+      pending
+      && pending.target.codexProjectId === targetBinding.codexProjectId
+      && pending.target.codexProjectKind === targetBinding.codexProjectKind
+      && pending.target.codexHostId === targetBinding.codexHostId
+      && pending.target.workspacePath === targetBinding.workspacePath
+    ) {
+      const pendingTask = tasksRef.current.find((candidate) => candidate.id === pending.taskId);
+      if (pendingTask) {
+        await openTaskInThread(pendingTask);
+        return;
+      }
+    }
+    const existingChild = task.relations.subIssues
+      .map((summary) => tasksRef.current.find((candidate) => candidate.id === summary.id))
+      .find((candidate) => (
+        candidate?.threadBinding?.codexProjectId === targetBinding.codexProjectId
+        && candidate.threadBinding.codexProjectKind === targetBinding.codexProjectKind
+        && candidate.threadBinding.codexHostId === targetBinding.codexHostId
+        && candidate.threadBinding.workspacePath === targetBinding.workspacePath
+      ));
+    if (existingChild?.threadBinding) {
+      openThread(existingChild.threadBinding);
+      return;
+    }
+
+    setActionError(null);
+    try {
+      const childDraft: TaskDraft = {
+        title: `${task.title} · ${text("当前设备会话", "This device session")}`,
+        description: `${text("由", "Created from")} ${task.identifier} ${text("自动创建，用于当前设备的执行会话。", "for this device's execution session.")}`,
+        status: "in_progress",
+        priority: task.priority,
+        labels: [...new Set([...task.labels, "device-session"])],
+        developmentContext: task.developmentContext,
+        startDate: null,
+        dueDate: null,
+        recurrence: null,
+      };
+      let child = await createTaskRequest(task.projectId, childDraft);
+      const parentResult = await addTaskRelation(child, "parent", task.id);
+      child = parentResult.task;
+      setTasks((current) => sortTasks([
+        ...current.filter((candidate) => candidate.id !== child.id),
+        child,
+        parentResult.relatedTask,
+      ]));
+      setProjects((current) => current.map((project) => (
+        project.id === task.projectId ? { ...project, issueCount: project.issueCount + 1 } : project
+      )));
+      pendingDeviceThreadRef.current = {
+        taskId: child.id,
+        sourceThreadId: hostContext?.threadId ?? null,
+        target: targetBinding,
+      };
+      taskboardStorage.setItem(DEVICE_THREAD_PENDING_KEY, JSON.stringify(pendingDeviceThreadRef.current));
+      await openTaskInThread(child);
+    } catch (error) {
+      pendingDeviceThreadRef.current = null;
+      taskboardStorage.removeItem(DEVICE_THREAD_PENDING_KEY);
+      setActionError(errorMessage(error));
     }
   }
 
