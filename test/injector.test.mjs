@@ -112,6 +112,11 @@ test("the CDP bridge accepts service ensure and native task conversation start a
   assert.match(source, /hostResponseMessage/);
   assert.match(source, /if \(keepAlive\) await hostBridge\.install\(\)/);
   assert.match(source, /hostBridge\.publishHeartbeat/);
+  assert.match(source, /heartbeatRecoveryThreshold = 10/);
+  assert.match(source, /taskboard-frame-recovery-start/);
+  assert.match(source, /taskboard-frame-recovery-success/);
+  assert.match(source, /taskboard-frame-recovery-failed/);
+  assert.match(source, /heartbeatRecoveryMaxAttempts = 3/);
   assert.match(source, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
   assert.match(source, /taskboardFrameRecovery: "reopen-unready"/);
   assert.match(source, /currentStatus\.frameReady !== true/);
