@@ -2456,6 +2456,7 @@ function storedAutomationPolicy(request) {
     codexProjectId: request.codexProjectId,
     codexProjectKind: request.codexProjectKind,
     codexHostId: request.codexHostId,
+    ...(request.threadId ? { threadId: request.threadId } : {}),
     projectName: request.projectName,
     workspacePath: request.workspacePath,
     remoteProjects: request.remoteProjects ?? [],
@@ -2694,6 +2695,10 @@ async function reconcileStoredAutomationPolicy(request, rpc) {
   const projectId = request.taskboardProjectId;
   const record = quotaPolicyRecords.get(projectId);
   if (!record) return null;
+  if (request.threadId && record.request.threadId !== request.threadId) {
+    record.request = { ...record.request, threadId: request.threadId };
+    await persistQuotaPolicies();
+  }
   if (
     record.request.codexProjectId !== request.codexProjectId
     || record.request.codexProjectKind !== request.codexProjectKind
