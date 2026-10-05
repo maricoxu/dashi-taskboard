@@ -57,7 +57,13 @@ test("heartbeat recovery reuses one isolated context and does not close a busy r
   assert.match(heartbeatSource, /heartbeatInFlight/);
   assert.match(heartbeatSource, /heartbeat-timeout/);
   assert.match(heartbeatSource, /if \(heartbeatInFlight !== operation\) return;/);
-  assert.match(heartbeatSource, /if \(heartbeatInFlight === operation\) heartbeatInFlight = null;/);
+  assert.match(source, /async function recoverTaskboardFrame\(\) \{\s*const now = Date\.now\(\);\s*if \(heartbeatInFlight\) return;/);
+  assert.match(heartbeatSource, /Keep the operation as[\s\S]*single in-flight heartbeat/);
+  assert.match(source, /const timeout = setTimeout\(\(\) => \{/);
+  assert.match(source, /Timed out waiting for CDP command \$\{method\}/);
+  assert.match(source, /clearTimeout\(pending\.timeout\)/);
+  assert.match(source, /maxPendingCommands = 64/);
+  assert.match(source, /event: "cdp-command-timeout"/);
   assert.doesNotMatch(heartbeatSource, /cdp\.close\(\)/);
 });
 
@@ -118,6 +124,8 @@ test("the CDP bridge accepts service ensure and native task conversation start a
   assert.match(source, /taskboard-frame-recovery-failed/);
   assert.match(source, /heartbeatRecoveryMaxAttempts = 3/);
   assert.match(source, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
+  assert.match(source, /"\/usr\/bin\/open",\s*\[\s*"-n"/);
+  assert.match(source, /if \(!options\.launch\) \{\s*if \(debuggingCodexFound\) return false;/);
   assert.match(source, /taskboardFrameRecovery: "reopen-unready"/);
   assert.match(source, /currentStatus\.frameReady !== true/);
   assert.match(source, /reusedInjectorPid/);
@@ -129,7 +137,7 @@ test("the CDP bridge exposes only the fixed Taskboard automation operations", ()
   assert.match(source, /reconcileTaskboardAutomation/);
   assert.match(runtimeSource, /request\.action === "automation"/);
   assert.match(source, /function requestCodexAutomationViaCdp/);
-  assert.match(source, /new Set\(\[\s*"list-automations",\s*"automation-create",\s*"automation-update",\s*\]\)/);
+  assert.match(source, /new Set\(\[\s*"list-automations",\s*"automation-create",\s*"automation-update",\s*"automation_update",\s*\]\)/);
   assert.match(source, /bridge\.sendMessageFromView\(\{\s*type: "fetch",\s*requestId,/);
   assert.match(source, /method: "POST"/);
   assert.match(source, /vscode:\/\/codex\/\$\{method\}/);

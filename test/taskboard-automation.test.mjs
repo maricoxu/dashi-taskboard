@@ -146,7 +146,8 @@ test("the stable name and generated prompt are project-scoped and encode the cla
   assert.match(prompt, /每 5 分钟检查/);
   assert.match(prompt, /ppt-skill/);
   assert.match(prompt, /\/Users\/example\/Documents\/ppt-skill/);
-  assert.match(prompt, /每次仅处理一个符合依赖条件的 todo/);
+  assert.match(prompt, /扫描全部符合依赖条件的 todo/);
+  assert.match(prompt, /单个任务的认领、Codex 会话、网络、版本冲突或执行出现错误时/);
   assert.match(prompt, /issue get/);
   assert.match(prompt, /comment list/);
   assert.match(prompt, /最新 version/);
@@ -262,7 +263,7 @@ test("the generated cron spec uses the selected whitelisted local Codex options"
   });
 });
 
-test("passive policy checks resume only after quota recovery", () => {
+test("local paused policies resume while remote passive policies retain quota gating", () => {
   const passiveAvailable = {
     explicit: false,
     previousQuotaState: "available",
@@ -274,14 +275,14 @@ test("passive policy checks resume only after quota recovery", () => {
       { ...baseRequest, quotaAware: true },
       passiveAvailable,
     ),
-    "list",
+    "ensure-active",
   );
   assert.equal(
     taskboardAutomationPolicyOperation(
       { ...baseRequest, quotaAware: true },
       { ...passiveAvailable, quotaState: "unknown" },
     ),
-    "list",
+    "pause",
   );
   assert.equal(
     taskboardAutomationPolicyOperation(

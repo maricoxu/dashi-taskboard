@@ -277,6 +277,7 @@ test("complete App automation payloads cross the injected forwarder into the cur
     codexProjectId: "codex-project",
     codexProjectKind: "local",
     codexHostId: "local",
+    threadId: "current-thread",
     projectName: "Local",
     workspacePath: "/tmp/local-project",
     remoteProjects: [],
@@ -302,6 +303,7 @@ test("complete App automation payloads cross the injected forwarder into the cur
       forwarded,
       `${operation} must retain model and reasoningEffort`,
     );
+    assert.equal(forwarded.threadId, "current-thread");
   }
 });
 

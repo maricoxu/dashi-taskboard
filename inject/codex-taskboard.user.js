@@ -1311,6 +1311,7 @@
       codexProjectId: payload.codexProjectId,
       codexProjectKind: payload.codexProjectKind,
       codexHostId: payload.codexHostId,
+      ...(payload.threadId === undefined ? {} : { threadId: payload.threadId }),
       projectName: payload.projectName,
       workspacePath: payload.workspacePath,
       ...(payload.remoteProjects === undefined ? {} : { remoteProjects: payload.remoteProjects }),

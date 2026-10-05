@@ -101,8 +101,10 @@ export function buildTaskboardAutomationPrompt(request) {
   const remoteProjects = request.remoteProjects ?? [];
   const candidateInstructions = [
     "从返回的 todo 中只选择依赖已完成的议题：relations.blockedBy 为空，或其中每个依赖的 status 都严格等于 done。无依赖的 todo 仍可并行处理。若有 todo 但全部被未完成依赖阻塞，本轮直接结束，不暂停自动化，也不创建或打开新的任务会话。",
-    "每次仅处理一个符合依赖条件的 todo：选定后先用 issue get 读取最新议题内容，并用 comment list 读取全部评论。根据描述和最新评论判断是否允许开始；若其中写明等待、暂不执行或当前不应开始，立即跳过并报告，不改状态。评论也包含已完成后被打回的返工要求。",
-    "完成 issue get 和 comment list 后、移动状态前，必须再次运行 issue get，并复核 relations.blockedBy 仍为空或其中每个依赖的 status 都严格等于 done。若依赖条件不再满足，立即跳过并结束本轮，不改状态，也不暂停自动化。",
+    "扫描全部符合依赖条件的 todo，不要只选择一个；按返回顺序逐个处理。每个任务先用 issue get 读取最新内容，再用 comment list 读取全部评论。根据描述和最新评论判断是否允许开始；若其中写明等待、暂不执行或当前不应开始，跳过该任务并继续检查后面的任务，不改状态。评论也包含已完成后被打回的返工要求。",
+    "每个任务在移动状态前都要再次 issue get，并复核 relations.blockedBy 仍为空或其中每个依赖的 status 都严格等于 done。若依赖条件不再满足，只跳过这个任务并继续后面的任务。",
+    "单个任务的认领、Codex 会话、网络、版本冲突或执行出现错误时，先用 comment add 记录明确错误原因；若错误意味着本轮无法继续处理该任务，再用最新 version、--if-version 和正确 binding 将该任务移动到 blocked，然后继续处理其余 todo。不得因为单个任务失败而结束整轮自动化。",
+    "本轮应尽可能处理所有可执行 todo；不要因为某个任务等待、超时或失败而暂停整个自动化。最终汇报扫描数量、跳过数量、认领数量、blocked 数量和每个任务的原因。",
   ];
   const executionInstructions = remoteProject
     ? [
@@ -176,6 +178,7 @@ export function taskboardAutomationPolicyOperation(request, {
     && currentStatus === "PAUSED"
     && !idlePaused
     && (!request.quotaAware || previousQuotaState === "available")
+    && request.codexProjectKind !== "local"
   ) return "list";
   if (request.quotaAware && quotaState !== "available") return "pause";
   return "ensure-active";

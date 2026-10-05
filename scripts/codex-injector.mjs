@@ -676,6 +676,7 @@ async function launchCodexWithLaunchServices(appPath, port, shouldStop = () => f
     const launcher = spawn(
       "/usr/bin/open",
       [
+        "-n",
         "-a",
         appPath,
         "--args",
@@ -815,6 +816,8 @@ class CdpConnection {
     this.closed = false;
     this.onClosed = null;
     this.onSocketError = null;
+    this.onCommandTimeout = null;
+    this.maxPendingCommands = 64;
   }
 
   async open() {
@@ -867,6 +870,7 @@ class CdpConnection {
       }
       const pending = this.pending.get(message.id);
       if (!pending) return;
+      clearTimeout(pending.timeout);
       this.pending.delete(message.id);
       if (message.error) pending.reject(new Error(message.error.message));
       else pending.resolve(message.result);
@@ -880,7 +884,10 @@ class CdpConnection {
       const intentional = this.closed;
       this.closed = true;
       const error = new Error("CDP WebSocket closed");
-      this.pending.forEach((pending) => pending.reject(error));
+      this.pending.forEach((pending) => {
+        clearTimeout(pending.timeout);
+        pending.reject(error);
+      });
       this.pending.clear();
       this.eventWaiters.forEach((waiters) => waiters.forEach((waiter) => waiter.reject(error)));
       this.eventWaiters.clear();
@@ -898,9 +905,20 @@ class CdpConnection {
     if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("CDP WebSocket closed"));
     }
+    if (this.pending.size >= this.maxPendingCommands) {
+      return Promise.reject(new Error("CDP command queue is full"));
+    }
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        this.onCommandTimeout?.({ id, method, pending: this.pending.size });
+        pending.reject(new Error(`Timed out waiting for CDP command ${method}`));
+      }, 30_000);
+      timeout.unref?.();
+      this.pending.set(id, { resolve, reject, timeout });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -1503,7 +1521,23 @@ async function requestLegacyAutomationBridge(cdp, executionContextId, method, pa
   if (!response?.ok) throw new Error(response?.error || "Codex automation request failed");
   if (!Number.isInteger(response.status) || response.status < 200 || response.status >= 300) throw new Error(`Codex automation request returned HTTP ${response.status}`);
   if (!response.bodyJsonString) return {};
-  return JSON.parse(response.bodyJsonString);
+  const parsed = JSON.parse(response.bodyJsonString);
+  const toolError = codexToolErrorMessage(parsed);
+  if (toolError) throw new Error(toolError);
+  return parsed;
+}
+
+function codexToolErrorMessage(payload) {
+  const result = payload?.result && typeof payload.result === "object"
+    ? payload.result
+    : payload;
+  if (result?.isError !== true) return null;
+  const content = Array.isArray(result.content) ? result.content : [];
+  const text = content
+    .map((block) => typeof block?.text === "string" ? block.text.trim() : "")
+    .filter(Boolean)
+    .join("\n");
+  return text || result.error?.message || "Codex automation tool returned an error";
 }
 
 async function requestCodexAutomationViaCdp(cdp, executionContextId, method, params) {
@@ -1526,7 +1560,11 @@ async function requestCodexAutomationViaCdp(cdp, executionContextId, method, par
     });
     const response = evaluation.result.value;
     if (!response?.ok) throw new Error(response?.error || "Codex automation request failed");
-    return response.bodyJsonString ? JSON.parse(response.bodyJsonString) : {};
+    if (!response.bodyJsonString) return {};
+    const parsed = JSON.parse(response.bodyJsonString);
+    const toolError = codexToolErrorMessage(parsed);
+    if (toolError) throw new Error(toolError);
+    return parsed;
   }
   if (method === "list-automations") {
     const local = await listLocalAutomations();
@@ -1635,6 +1673,8 @@ async function requestCodexAutomationViaCdp(cdp, executionContextId, method, par
   }
   try {
     const parsed = JSON.parse(response.bodyJsonString);
+    const toolError = codexToolErrorMessage(parsed);
+    if (toolError) throw new Error(toolError);
     if (method !== "automation_update") return parsed;
     const content = parsed?.content ?? parsed?.result?.content ?? [];
     const structured = parsed?.structuredContent ?? parsed?.structured_content
@@ -2360,16 +2400,10 @@ async function localAutomationTodoInputs(request, tasks) {
 
 async function localAutomationTodoGate(request, tasks, previousGate, evaluatedTodoGate) {
   const { candidates, snapshot } = await localAutomationTodoInputs(request, tasks);
-  // Dependency-only skips retain their existing behavior in the cron prompt.
+  // The cron prompt owns per-task comment/intent checks. A hidden semantic
+  // preflight must never pause the whole project or serialize all todo work.
   if (candidates.length === 0) return undefined;
-  // Recheck after the ephemeral turn before enabling cron. This is not a claim:
-  // the original prompt still checks fresh task/comments, versions and bindings.
-  if (evaluatedTodoGate?.snapshot === snapshot) {
-    return { snapshot, state: evaluatedTodoGate.state };
-  }
-  return snapshot === previousGate?.snapshot
-    ? previousGate
-    : { snapshot, state: "checking" };
+  return { snapshot, state: "start" };
 }
 
 async function evaluateLocalAutomationTodos(record) {
@@ -2605,8 +2639,7 @@ function scheduleQuotaPolicyCheck(record, result) {
   if (!request.enabledByUser) return;
 
   const nextRunAt = Number(result.item?.nextRunAt);
-  const checkTodos = result.todoGate?.state === "checking"
-    && (!request.quotaAware || result.quota?.state === "available");
+  const checkTodos = false;
   const nextRunDelay = checkTodos ? 1_000
     : Number.isFinite(nextRunAt) && nextRunAt > Date.now()
       ? Math.max(
@@ -3220,6 +3253,7 @@ function installTaskboardHostBinding(
 
   async function recoverTaskboardFrame() {
     const now = Date.now();
+    if (heartbeatInFlight) return;
     if (heartbeatFailureCount < heartbeatRecoveryThreshold || !recoveryAllowed(now)) return;
     if (recoveryInFlight) return recoveryInFlight.promise;
     recoveryAttempts.push(now);
@@ -3324,18 +3358,17 @@ function installTaskboardHostBinding(
     ]);
     clearTimeout(timeout);
     if (result.status === "timeout") {
-      // Promise.race does not cancel Runtime.evaluate. Release the slot so a
-      // later heartbeat can recover, while the stale operation is ignored by
-      // the guarded handlers above.
-      if (heartbeatInFlight === operation) heartbeatInFlight = null;
+      // Promise.race does not cancel Runtime.evaluate. Keep the operation as
+      // the single in-flight heartbeat until CDP settles it; otherwise every
+      // loop iteration would enqueue another Runtime.evaluate on a wedged
+      // renderer and eventually take down the host process.
       timeoutObserved = true;
       heartbeatFailureCount += 1;
-      heartbeatRetryAt = Date.now() + heartbeatBackoffMs();
       console.error(JSON.stringify({
         codexRenderer: {
           event: "heartbeat-timeout",
           targetId: cdp.diagnosticTargetId || null,
-          retryAt: heartbeatRetryAt,
+          retryAt: null,
           pendingOperation: true,
         },
       }));
@@ -3431,6 +3464,15 @@ async function injectTarget(
     console.error(JSON.stringify({
       codexRenderer: {
         event: "cdp-socket-error",
+        targetId: target.id,
+        ...detail,
+      },
+    }));
+  };
+  cdp.onCommandTimeout = (detail) => {
+    console.error(JSON.stringify({
+      codexRenderer: {
+        event: "cdp-command-timeout",
         targetId: target.id,
         ...detail,
       },
@@ -4010,9 +4052,11 @@ async function main() {
         return true;
       }
       if (runningCodex.length > 0) {
-        if (debuggingCodexFound) return false;
-        nativeCodexBrowser = true;
-        return false;
+        if (!options.launch) {
+          if (debuggingCodexFound) return false;
+          nativeCodexBrowser = true;
+          return false;
+        }
       }
     }
     if (options.launch) {
