@@ -2985,6 +2985,59 @@ function installTaskboardHostBinding(
   let heartbeatInFlight = null;
   let heartbeatFailureCount = 0;
   let heartbeatRetryAt = 0;
+  let recoveryInFlight = null;
+  let lastRecoveryAt = 0;
+  const recoveryAttempts = [];
+  const heartbeatRecoveryThreshold = 10;
+  const heartbeatRecoveryCooldownMs = 60_000;
+  const heartbeatRecoveryWindowMs = 10 * 60_000;
+  const heartbeatRecoveryMaxAttempts = 3;
+
+  function recoveryAllowed(now = Date.now()) {
+    while (recoveryAttempts[0] && now - recoveryAttempts[0] > heartbeatRecoveryWindowMs) {
+      recoveryAttempts.shift();
+    }
+    return recoveryAttempts.length < heartbeatRecoveryMaxAttempts
+      && !recoveryInFlight
+      && now - lastRecoveryAt >= heartbeatRecoveryCooldownMs;
+  }
+
+  async function recoverTaskboardFrame() {
+    const now = Date.now();
+    if (heartbeatFailureCount < heartbeatRecoveryThreshold || !recoveryAllowed(now)) return;
+    if (recoveryInFlight) return recoveryInFlight.promise;
+    recoveryAttempts.push(now);
+    lastRecoveryAt = now;
+    const targetId = cdp.diagnosticTargetId || null;
+    const promise = (async () => {
+      console.error(JSON.stringify({ codexRenderer: {
+        event: "taskboard-frame-recovery-start",
+        targetId,
+        failureCount: heartbeatFailureCount,
+        attempt: recoveryAttempts.length,
+      } }));
+      try {
+        await cdp.send("Runtime.evaluate", {
+          expression: "window.__codexTaskboardInjection__?.open()",
+          returnByValue: true,
+        });
+        console.log(JSON.stringify({ codexRenderer: {
+          event: "taskboard-frame-recovery-success",
+          targetId,
+          attempt: recoveryAttempts.length,
+        } }));
+      } catch (error) {
+        console.error(JSON.stringify({ codexRenderer: {
+          event: "taskboard-frame-recovery-failed",
+          targetId,
+          message: error.message,
+          attempt: recoveryAttempts.length,
+        } }));
+      }
+    })();
+    recoveryInFlight = { startedAt: now, promise };
+    try { await promise; } finally { recoveryInFlight = null; }
+  }
 
   function heartbeatBackoffMs() {
     return Math.min(30_000, 1_000 * (2 ** Math.min(heartbeatFailureCount, 5)));
@@ -3021,8 +3074,8 @@ function installTaskboardHostBinding(
             },
           }));
         }
-        heartbeatFailureCount = 0;
-        heartbeatRetryAt = 0;
+      heartbeatFailureCount = 0;
+      heartbeatRetryAt = 0;
       },
       (error) => {
         // A timed-out operation may reject after a later heartbeat has
@@ -3041,6 +3094,7 @@ function installTaskboardHostBinding(
             retryAt: heartbeatRetryAt,
           },
         }));
+        void recoverTaskboardFrame();
       },
     );
 
@@ -3069,6 +3123,7 @@ function installTaskboardHostBinding(
           pendingOperation: true,
         },
       }));
+      void recoverTaskboardFrame();
     }
     return result.status === "failed"
       ? { status: result.status, message: result.error.message }
