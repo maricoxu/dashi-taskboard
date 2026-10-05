@@ -899,7 +899,8 @@ export function TaskDetail({
       setCommentSegments(createInlineMediaSegments());
       if (commentAttachmentInputRef.current) commentAttachmentInputRef.current.value = "";
       let relationAnchor = await getTask(currentTask.id);
-      if (changeStatusToTodo && relationAnchor.status !== "todo") {
+      const returnToTodo = relationAnchor.status === "in_review" || changeStatusToTodo;
+      if (returnToTodo && relationAnchor.status !== "todo") {
         const saved = await onUpdate(relationAnchor, { status: "todo" });
         setCurrentTask(saved);
         relationAnchor = saved;
@@ -1630,19 +1631,25 @@ export function TaskDetail({
                     />
                   </div>
                   <div>
-                    {currentTask.status !== "todo" && <div className="comment-status-action">
-                      <span>{text("改变状态为-等待认领", "Change status to Todo")}</span>
-                      <button
-                        type="button"
-                        className={`board-setting-switch${changeStatusToTodo ? " is-on" : ""}`}
-                        role="switch"
-                        aria-checked={changeStatusToTodo}
-                        disabled={submitting}
-                        onClick={() => setChangeStatusToTodo((current) => !current)}
-                      >
-                        <span aria-hidden="true" />
-                      </button>
-                    </div>}
+                    {currentTask.status === "in_review" ? (
+                      <div className="comment-status-action comment-status-action-auto">
+                        <span>{text("发布反馈后自动回到等待认领", "Feedback returns the issue to Todo")}</span>
+                      </div>
+                    ) : currentTask.status !== "todo" && (
+                      <div className="comment-status-action">
+                        <span>{text("改变状态为-等待认领", "Change status to Todo")}</span>
+                        <button
+                          type="button"
+                          className={`board-setting-switch${changeStatusToTodo ? " is-on" : ""}`}
+                          role="switch"
+                          aria-checked={changeStatusToTodo}
+                          disabled={submitting}
+                          onClick={() => setChangeStatusToTodo((current) => !current)}
+                        >
+                          <span aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
                     <button
                       className="button primary"
                       type="submit"
@@ -1652,7 +1659,11 @@ export function TaskDetail({
                         && commentInlineFiles.length === 0
                       ) || submitting}
                     >
-                      {submitting ? text("发布中…", "Posting…") : text("评论", "Comment")}
+                      {submitting
+                        ? text("发布中…", "Posting…")
+                        : currentTask.status === "in_review"
+                          ? text("评论并继续处理", "Comment and continue")
+                          : text("评论", "Comment")}
                     </button>
                   </div>
                 </footer>
