@@ -21,6 +21,7 @@ const baseRequest = {
   codexProjectId: "codex-project-123",
   codexProjectKind: "local",
   codexHostId: "local",
+  threadId: "thread-1",
   projectName: "PPT Skill",
   workspacePath: "/Users/example/Documents/ppt-skill",
   skillPath: "/Users/example/taskboard/skills/manage-taskboard/SKILL.md",

@@ -14,6 +14,7 @@ const HOST_REQUEST_FIELDS = new Set([
   "codexProjectId",
   "codexProjectKind",
   "codexHostId",
+  "threadId",
   "projectName",
   "workspacePath",
   "remoteProjects",
@@ -34,6 +35,7 @@ export function parseTaskboardAutomationHostRequest(value) {
   if (!AUTOMATION_OPERATIONS.has(value.operation)) return null;
   if (!validProjectId(value.taskboardProjectId)) return null;
   if (!validText(value.codexProjectId, 256) || !validText(value.projectName, 200)) return null;
+  if (value.threadId !== undefined && !validText(value.threadId, 256)) return null;
   const codexProjectKind = value.codexProjectKind ?? "local";
   const codexHostId = value.codexHostId ?? "local";
   if (codexProjectKind !== "local" && codexProjectKind !== "remote") return null;
@@ -75,6 +77,7 @@ export function parseTaskboardAutomationHostRequest(value) {
     codexProjectId: value.codexProjectId,
     codexProjectKind,
     codexHostId,
+    ...(value.threadId === undefined ? {} : { threadId: value.threadId }),
     projectName: value.projectName,
     workspacePath: value.workspacePath,
     ...(value.remoteProjects === undefined ? {} : { remoteProjects }),

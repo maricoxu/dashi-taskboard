@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { format } from "node:util";
 import WebSocket from "ws";
+import { parse as parseToml } from "smol-toml";
 
 import { resolvePort } from "../server/app.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
@@ -213,6 +214,7 @@ const codexAutomationMethods = new Set([
   "list-automations",
   "automation-create",
   "automation-update",
+  "automation_update",
 ]);
 let codexAutomationRequestSequence = 0;
 let codexAppServerRequestSequence = 0;
@@ -1463,9 +1465,92 @@ async function proxyTaskboardHttpRequest(request) {
   };
 }
 
+async function requestLegacyAutomationBridge(cdp, executionContextId, method, params) {
+  const requestId = ["taskboard-automation", process.pid, Date.now().toString(36), (++codexAutomationRequestSequence).toString(36)].join("-");
+  const evaluation = await cdp.send("Runtime.evaluate", {
+    expression: `(() => new Promise((resolve) => {
+      const requestId = ${JSON.stringify(requestId)};
+      const bridge = window.electronBridge;
+      if (!bridge || typeof bridge.sendMessageFromView !== "function") {
+        resolve({ ok: false, error: "当前 Codex 版本没有提供原生自动任务能力" });
+        return;
+      }
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        window.removeEventListener("message", onMessage);
+        resolve(result);
+      };
+      const onMessage = (event) => {
+        const message = event.data;
+        if (!message || typeof message !== "object" || message.type !== "fetch-response" || message.requestId !== requestId) return;
+        finish({ ok: true, status: message.status, bodyJsonString: message.bodyJsonString });
+      };
+      const timeout = window.setTimeout(() => finish({ ok: false, error: "Codex 自动任务接口没有响应" }), 10_000);
+      window.addEventListener("message", onMessage);
+      Promise.resolve(bridge.sendMessageFromView({
+        type: "fetch", requestId, method: "POST", url: \`vscode://codex/${method}\`, body: JSON.stringify(params),
+      })).catch((error) => finish({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    }))()`,
+    ...(Number.isInteger(executionContextId) ? { contextId: executionContextId } : {}),
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (evaluation.exceptionDetails) throw new Error(evaluation.exceptionDetails.exception?.description || "Codex automation request failed");
+  const response = evaluation.result.value;
+  if (!response?.ok) throw new Error(response?.error || "Codex automation request failed");
+  if (!Number.isInteger(response.status) || response.status < 200 || response.status >= 300) throw new Error(`Codex automation request returned HTTP ${response.status}`);
+  if (!response.bodyJsonString) return {};
+  return JSON.parse(response.bodyJsonString);
+}
+
 async function requestCodexAutomationViaCdp(cdp, executionContextId, method, params) {
-  if (!codexAutomationMethods.has(method)) {
+  if (typeof readdir !== "function") {
+    const requestId = ["taskboard-automation", process.pid, Date.now().toString(36), (++codexAutomationRequestSequence).toString(36)].join("-");
+    const evaluation = await cdp.send("Runtime.evaluate", {
+      expression: `(() => new Promise((resolve) => {
+        const requestId = ${JSON.stringify(requestId)};
+        const bridge = window.electronBridge;
+        let settled = false;
+        const finish = (result) => { if (settled) return; settled = true; window.clearTimeout(timeout); window.removeEventListener("message", onMessage); resolve(result); };
+        const onMessage = (event) => { const message = event.data; if (!message || message.type !== "fetch-response" || message.requestId !== requestId) return; finish({ ok: true, status: message.status, bodyJsonString: message.bodyJsonString }); };
+        const timeout = window.setTimeout(() => finish({ ok: false, error: "Codex 自动任务接口没有响应" }), 10_000);
+        window.addEventListener("message", onMessage);
+        Promise.resolve(bridge.sendMessageFromView({ type: "fetch", requestId, method: "POST", url: \`vscode://codex/${method}\`, body: ${JSON.stringify(JSON.stringify(params))} })).catch((error) => finish({ ok: false, error: String(error) }));
+      }))()`,
+      ...(Number.isInteger(executionContextId) ? { contextId: executionContextId } : {}),
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const response = evaluation.result.value;
+    if (!response?.ok) throw new Error(response?.error || "Codex automation request failed");
+    return response.bodyJsonString ? JSON.parse(response.bodyJsonString) : {};
+  }
+  if (method === "list-automations") {
+    const local = await listLocalAutomations();
+    return local ?? requestLegacyAutomationBridge(cdp, executionContextId, method, params);
+  }
+  const legacyOperation = method === "automation-create" ? "create"
+    : method === "automation-update" ? "update" : null;
+  if (legacyOperation) {
+    const { _threadId, ...automation } = params ?? {};
+    return requestCodexAutomationViaCdp(cdp, executionContextId, "automation_update", {
+      threadId: _threadId,
+      arguments: {
+        mode: legacyOperation,
+        ...(legacyOperation === "update" ? { id: automation.id } : {}),
+        ...automationFieldsForCodex(automation),
+      },
+    });
+  }
+  if (method !== "automation_update") {
     throw new Error(`Unsupported Codex automation method: ${method}`);
+  }
+  const { threadId, arguments: toolArguments } = params ?? {};
+  if (typeof threadId !== "string" || !threadId.trim()) {
+    throw new Error("当前 Codex 会话没有提供 threadId，无法更新自动认领");
   }
   const requestId = [
     "taskboard-automation",
@@ -1475,8 +1560,13 @@ async function requestCodexAutomationViaCdp(cdp, executionContextId, method, par
   ].join("-");
   const evaluation = await cdp.send("Runtime.evaluate", {
     expression: `(() => new Promise((resolve) => {
-      const method = ${JSON.stringify(method)};
-      const params = ${JSON.stringify(params)};
+      const method = "mcpServer/tool/call";
+      const params = ${JSON.stringify({
+        threadId,
+        server: "codex_app",
+        tool: "automation_update",
+        arguments: toolArguments,
+      })};
       const requestId = ${JSON.stringify(requestId)};
       const bridge = window.electronBridge;
       if (!bridge || typeof bridge.sendMessageFromView !== "function") {
@@ -1543,10 +1633,89 @@ async function requestCodexAutomationViaCdp(cdp, executionContextId, method, par
     return {};
   }
   try {
-    return JSON.parse(response.bodyJsonString);
+    const parsed = JSON.parse(response.bodyJsonString);
+    if (method !== "automation_update") return parsed;
+    const content = parsed?.content ?? parsed?.result?.content ?? [];
+    const structured = parsed?.structuredContent ?? parsed?.structured_content
+      ?? parsed?.result?.structuredContent ?? parsed?.result?.structured_content;
+    let result = structured && typeof structured === "object" ? structured : null;
+    let automationId = result?.automationId ?? result?.id ?? toolArguments?.id;
+    for (const block of Array.isArray(content) ? content : []) {
+      if (typeof block?.text !== "string") continue;
+      if (!result) {
+        try {
+          const candidate = JSON.parse(block.text);
+          if (candidate && typeof candidate === "object") result = candidate;
+        } catch {}
+      }
+      automationId ??= block.text.match(/Automation ID:\s*([^\s]+)/i)?.[1];
+    }
+    const listed = await listLocalAutomations();
+    const item = listed.items.find((candidate) => (
+      (automationId && candidate.id === automationId)
+      || (toolArguments?.id && candidate.id === toolArguments.id)
+      || (toolArguments?.name && candidate.name === toolArguments.name)
+    ));
+    if (item) return { item, items: listed.items };
+    return result ?? parsed;
   } catch {
     throw new Error("Codex automation request returned invalid JSON");
   }
+}
+
+function automationFieldsForCodex(value) {
+  const fields = { ...value };
+  delete fields.id;
+  return fields;
+}
+
+async function listLocalAutomations() {
+  if (typeof readdir !== "function") return null;
+  const home = process?.env?.HOME ?? "/tmp";
+  const root = path.join(home, ".codex", "automations");
+  const items = [];
+  let directories = [];
+  try { directories = await readdir(root, { withFileTypes: true }); } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  for (const directory of directories) {
+    if (!directory.isDirectory()) continue;
+    try {
+      const source = await readFile(path.join(root, directory.name, "automation.toml"), "utf8");
+      const value = typeof parseToml === "function"
+        ? parseToml(source)
+        : parseSimpleAutomationToml(source);
+      if (typeof value.id !== "string" || typeof value.name !== "string") continue;
+      const target = value.target && typeof value.target === "object" ? value.target : {};
+      items.push({
+        id: value.id,
+        kind: value.kind,
+        name: value.name,
+        prompt: value.prompt,
+        status: value.status === "ACTIVE" ? "ACTIVE" : "PAUSED",
+        model: value.model,
+        reasoningEffort: value.reasoning_effort,
+        rrule: value.rrule,
+        projectId: target.project_id ?? value.project_id ?? null,
+        executionEnvironment: value.execution_environment ?? "local",
+        localEnvironmentConfigPath: value.local_environment_config_path ?? null,
+      });
+    } catch {}
+  }
+  return directories.some((directory) => directory.isDirectory()) ? { items } : null;
+}
+
+function parseSimpleAutomationToml(source) {
+  const value = {};
+  for (const line of source.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^#]+))/);
+    if (!match) continue;
+    value[match[1]] = (match[2] ?? match[3] ?? match[4] ?? "").trim();
+  }
+  const project = source.match(/project_id\s*=\s*"([^"]+)"/);
+  if (project) value.target = { project_id: project[1] };
+  return value;
 }
 
 async function requestCodexAppServerViaCdp(
@@ -2885,7 +3054,7 @@ function installTaskboardHostBinding(
             cdp,
             undefined,
             method,
-            body,
+            method === "list-automations" ? body : { ...body, _threadId: request.threadId },
           );
           if (request.operation === "list") {
             const stored = await reconcileStoredAutomationPolicy(

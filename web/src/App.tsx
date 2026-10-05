@@ -245,6 +245,7 @@ interface AutomationRequestContext {
   codexProjectId: string;
   codexProjectKind: "local" | "remote";
   codexHostId: string;
+  threadId: string;
   projectName: string;
   workspacePath: string;
   remoteProjects: CodexProjectIdentity[];
@@ -1145,12 +1146,14 @@ export function App() {
       || !automationProjectContext.codexHostId
       || !automationProjectContext.workspacePath
       || !manageTaskboardSkillPath
+      || !hostContext?.threadId
     ) return null;
     return {
       taskboardProjectId: selectedProject.id,
       codexProjectId: automationProjectContext.codexProjectId,
       codexProjectKind: automationProjectContext.codexProjectKind,
       codexHostId: automationProjectContext.codexHostId,
+      threadId: hostContext.threadId,
       projectName: selectedProject.name,
       workspacePath: automationProjectContext.workspacePath,
       remoteProjects: automationProjectContext.codexProjectKind === "remote"
@@ -1371,6 +1374,7 @@ export function App() {
         codexProjectId: context.codexProjectId,
         codexProjectKind: context.codexProjectKind,
         codexHostId: context.codexHostId,
+        threadId: context.threadId,
         projectName: context.projectName,
         workspacePath: context.workspacePath,
         remoteProjects: context.remoteProjects,

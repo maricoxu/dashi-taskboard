@@ -17,6 +17,7 @@ const currentAutomationRequest = {
   codexProjectId: "codex-project",
   codexProjectKind: "local",
   codexHostId: "local",
+  threadId: "thread-1",
   projectName: "Local",
   workspacePath: "/tmp/project",
   skillPath: "/tmp/manage-taskboard/SKILL.md",
