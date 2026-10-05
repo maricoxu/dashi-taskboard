@@ -1342,7 +1342,12 @@ export function resolveServerOptions(options = {}) {
     skillPath: options.skillPath
       ?? environment.CODEX_TASKBOARD_SKILL_PATH
       ?? path.join(PROJECT_ROOT, "skills", "manage-taskboard", "SKILL.md"),
-    codexExecutable: resolveCodexExecutable({ explicit: options.codexExecutable }),
+    codexExecutable: resolveCodexExecutable({
+      explicit: options.codexExecutable
+        ?? environment.CODEX_EXECUTABLE
+        ?? environment.CODEX_CLI_PATH,
+      env: environment,
+    }),
     codexStatePath: options.codexStatePath
       ?? path.join(codexHome, ".codex-global-state.json"),
     codexProcessesPath: options.codexProcessesPath
