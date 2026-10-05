@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -40,4 +40,43 @@ test("Windows PATH resolves the npm Codex shim to its Node entry", {
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
+});
+
+test("macOS ChatGPT bundles resolve the nested Codex CLI", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "codex-executable-macos-test-"));
+  try {
+    const executable = path.join(
+      directory,
+      "ChatGPT.app",
+      "Contents",
+      "Resources",
+      "codex-cli",
+      "bin",
+      "codex",
+    );
+    await mkdir(path.dirname(executable), { recursive: true });
+    await writeFile(executable, "#!/bin/sh\n");
+    await chmod(executable, 0o755);
+    assert.equal(
+      resolveCodexExecutable({
+        explicit: "",
+        appPath: path.join(directory, "ChatGPT.app"),
+        env: { PATH: "" },
+        platform: "darwin",
+      }),
+      executable,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("explicit CLI environment paths take precedence over PATH discovery", () => {
+  assert.equal(
+    resolveCodexExecutable({
+      env: { CODEX_CLI_PATH: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex", PATH: "" },
+      platform: "darwin",
+    }),
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+  );
 });
