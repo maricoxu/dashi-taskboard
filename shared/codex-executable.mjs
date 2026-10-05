@@ -36,26 +36,39 @@ function executableOnPath(env, platform) {
   return null;
 }
 
-export function codexExecutableInApp(appPath, platform = process.platform) {
+function codexExecutableCandidatesInApp(appPath, platform = process.platform) {
   if (platform === "win32") {
-    return path.win32.join(path.win32.dirname(appPath), "resources", "codex.exe");
+    return [path.win32.join(path.win32.dirname(appPath), "resources", "codex.exe")];
   }
-  if (platform === "linux") return "/usr/lib/chatgpt/resources/codex";
-  return path.join(appPath, "Contents", "Resources", "codex");
+  if (platform === "linux") return ["/usr/lib/chatgpt/resources/codex"];
+  const resources = path.join(appPath, "Contents", "Resources");
+  return [
+    path.join(resources, "codex"),
+    path.join(resources, "codex-cli", "bin", "codex"),
+    path.join(resources, "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+  ];
+}
+
+export function codexExecutableInApp(appPath, platform = process.platform) {
+  return codexExecutableCandidatesInApp(appPath, platform)[0];
 }
 
 export function resolveCodexExecutable({
-  explicit = process.env.CODEX_EXECUTABLE,
+  explicit,
   appPath,
   env = process.env,
   platform = process.platform,
   homeDirectory = os.homedir(),
 } = {}) {
   if (typeof explicit === "string" && explicit.trim()) return explicit.trim();
+  const configured = env.CODEX_EXECUTABLE ?? env.CODEX_CLI_PATH;
+  if (typeof configured === "string" && configured.trim()) return configured.trim();
 
   if (appPath) {
-    const bundled = executableFile(codexExecutableInApp(appPath, platform));
-    if (bundled) return bundled;
+    for (const candidate of codexExecutableCandidatesInApp(appPath, platform)) {
+      const bundled = executableFile(candidate);
+      if (bundled) return bundled;
+    }
   }
 
   const installedCli = executableOnPath(env, platform);
@@ -63,12 +76,14 @@ export function resolveCodexExecutable({
 
   if (platform === "darwin") {
     for (const applicationDirectory of ["/Applications", path.join(homeDirectory, "Applications")]) {
-      for (const applicationName of ["ChatGPT.app", "Codex.app"]) {
-        const bundled = executableFile(codexExecutableInApp(
+    for (const applicationName of ["ChatGPT.app", "Codex.app"]) {
+        for (const candidate of codexExecutableCandidatesInApp(
           path.join(applicationDirectory, applicationName),
           platform,
-        ));
-        if (bundled) return bundled;
+        )) {
+          const bundled = executableFile(candidate);
+          if (bundled) return bundled;
+        }
       }
     }
   }
