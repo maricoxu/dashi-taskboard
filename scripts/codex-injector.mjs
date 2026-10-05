@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { format } from "node:util";
 import WebSocket from "ws";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
 import { resolvePort } from "../server/app.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
@@ -1535,6 +1535,7 @@ async function requestCodexAutomationViaCdp(cdp, executionContextId, method, par
   const legacyOperation = method === "automation-create" ? "create"
     : method === "automation-update" ? "update" : null;
   if (legacyOperation) {
+    if (typeof readdir === "function") return writeLocalAutomation(legacyOperation, params ?? {});
     const { _threadId, ...automation } = params ?? {};
     return requestCodexAutomationViaCdp(cdp, executionContextId, "automation_update", {
       threadId: _threadId,
@@ -1689,6 +1690,7 @@ async function listLocalAutomations() {
       if (typeof value.id !== "string" || typeof value.name !== "string") continue;
       const target = value.target && typeof value.target === "object" ? value.target : {};
       items.push({
+        directory: directory.name,
         id: value.id,
         kind: value.kind,
         name: value.name,
@@ -1716,6 +1718,46 @@ function parseSimpleAutomationToml(source) {
   const project = source.match(/project_id\s*=\s*"([^"]+)"/);
   if (project) value.target = { project_id: project[1] };
   return value;
+}
+
+async function writeLocalAutomation(operation, value) {
+  const home = process?.env?.HOME ?? "/tmp";
+  const root = path.join(home, ".codex", "automations");
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const listed = (await listLocalAutomations()) ?? { items: [] };
+  const existing = listed.items.find((item) => (
+    (value.id && item.id === value.id) || (value.name && item.name === value.name)
+  ));
+  if (operation === "update" && !existing) return { error: "not-found" };
+  const id = existing?.id ?? `taskboard-${randomUUID()}`;
+  const directory = existing?.directory ?? id;
+  const record = {
+    version: 1,
+    id,
+    kind: "cron",
+    name: value.name,
+    prompt: value.prompt,
+    status: value.status === "PAUSED" ? "PAUSED" : "ACTIVE",
+    rrule: value.rrule,
+    model: value.model,
+    reasoning_effort: value.reasoningEffort ?? value.reasoning_effort,
+    execution_environment: "local",
+    target: { type: "project", project_id: value.projectId ?? null },
+    cwds: value.workspacePath ? [value.workspacePath] : [],
+  };
+  const destination = path.join(root, directory, "automation.toml");
+  await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(temporary, stringifyToml(record), { mode: 0o600 });
+  await rename(temporary, destination);
+  return {
+    item: {
+      ...record,
+      reasoningEffort: record.reasoning_effort,
+      projectId: record.target.project_id,
+      executionEnvironment: record.execution_environment,
+    },
+  };
 }
 
 async function requestCodexAppServerViaCdp(
