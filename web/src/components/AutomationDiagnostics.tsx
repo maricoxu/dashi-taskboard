@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTaskboardI18n } from "../i18n";
 
 export type AutomationDiagnosticReason =
@@ -41,6 +42,7 @@ interface AutomationDiagnosticsProps {
 
 export function AutomationDiagnostics({ diagnostics, compact = false, lastRun, error }: AutomationDiagnosticsProps) {
   const { text, locale } = useTaskboardI18n();
+  const [expanded, setExpanded] = useState(!compact);
   if (diagnostics.length === 0 && !lastRun && !error) return null;
   const visible = compact ? diagnostics.slice(0, 5) : diagnostics;
   const hiddenCount = diagnostics.length - visible.length;
@@ -54,11 +56,42 @@ export function AutomationDiagnostics({ diagnostics, compact = false, lastRun, e
     skipped: text("本轮跳过", "Skipped"),
   };
   const failures = diagnostics.filter((item) => item.state === "failed" || item.state === "blocked").length;
+  const started = diagnostics.filter((item) => item.state === "started" || item.state === "in_review").length;
+  const summary = lastRun?.state === "starting"
+    ? text("自动认领处理中", "Auto-claim in progress")
+    : lastRun?.state === "failed"
+      ? text("自动认领失败", "Auto-claim failed")
+      : failures > 0
+        ? text(`自动认领：${failures} 项异常`, `Auto-claim: ${failures} error${failures === 1 ? "" : "s"}`)
+        : started > 0
+          ? text(`自动认领：${started} 项已启动`, `Auto-claim: ${started} started`)
+          : text("自动认领已检查", "Auto-claim checked");
+  const compactReason = (value: string) => value.split(/\r?\n/)[0].trim().slice(0, 120);
+  if (compact && !expanded) {
+    return (
+      <section className="automation-diagnostics automation-diagnostics-compact-summary" role="status">
+        <span className="automation-diagnostics-summary-label">{summary}</span>
+        {error && <span className="automation-diagnostics-summary-error">{compactReason(error)}</span>}
+        {lastRun?.error && <span className="automation-diagnostics-summary-error">{compactReason(lastRun.error)}</span>}
+        <button
+          type="button"
+          className="automation-diagnostics-summary-action"
+          aria-expanded="false"
+          onClick={() => setExpanded(true)}
+        >
+          {text("查看", "Details")}
+        </button>
+      </section>
+    );
+  }
   return (
     <section className={`automation-diagnostics${compact ? " is-compact" : ""}`} role="status">
       <div className="automation-diagnostics-heading">
         <strong>{text("自动认领诊断", "Auto-claim diagnostics")}</strong>
-        <span>{text(`${diagnostics.length} 项结果`, `${diagnostics.length} results`)}</span>
+        <div className="automation-diagnostics-heading-actions">
+          <span>{text(`${diagnostics.length} 项结果`, `${diagnostics.length} results`)}</span>
+          {compact && <button type="button" onClick={() => setExpanded(false)}>{text("收起", "Collapse")}</button>}
+        </div>
       </div>
       {error && <div role="alert">{text("无法读取自动认领状态：", "Could not read auto-claim status: ")}{error}</div>}
       {lastRun?.state === "starting" && <div>{text("正在扫描并启动本轮任务…", "Scanning and starting tasks…")}</div>}
