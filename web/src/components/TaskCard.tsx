@@ -197,7 +197,7 @@ function ProcessingProgress({
 
 function ProcessingLabel({ processing }: { processing: TaskCardPresentation["processing"] }) {
   const { text } = useTaskboardI18n();
-  const { running, startedAt } = processing;
+  const { running, startedAt, state } = processing;
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!running || !startedAt) return;
@@ -210,7 +210,9 @@ function ProcessingLabel({ processing }: { processing: TaskCardPresentation["pro
     <span className="task-processing-label">
       {running
         ? (elapsed ? text(`已处理 ${elapsed}...`, `Processing for ${elapsed}...`) : text("正在处理...", "Processing..."))
-        : text("暂停处理", "Processing paused")}
+        : state === "awaiting-session"
+          ? text("正在等待会话状态...", "Waiting for session status...")
+          : text("执行已停止，待排查", "Execution stopped; investigation needed")}
     </span>
   );
 }

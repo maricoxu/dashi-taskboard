@@ -25,6 +25,7 @@ export interface TaskConversationItem {
 
 export interface TaskProcessingPresentation {
   running: boolean;
+  state: "running" | "awaiting-session";
   completed: number | null;
   total: number | null;
   startedAt: string | null;
@@ -200,6 +201,10 @@ export function taskCardPresentation(
     processing: {
       running: task.status === "in_progress"
         && (Boolean(running) || taskNativeSession?.running === true),
+      state: task.status === "in_progress"
+        && !(Boolean(running) || taskNativeSession?.running === true)
+        ? "awaiting-session"
+        : "running",
       completed: latestTodo?.completed ?? null,
       total: latestTodo?.total ?? null,
       startedAt: runningAi?.currentRun?.startedAt ?? null,

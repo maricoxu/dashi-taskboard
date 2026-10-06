@@ -21,9 +21,15 @@ function promptFor(task, comments, request) {
   ].join("\n\n");
 }
 
-export async function dispatchLocalTodos(request, { request: taskboardRequest, rpc, stillCurrent }) {
+export async function dispatchLocalTodos(
+  request,
+  { request: taskboardRequest, rpc, waitForTurn, stillCurrent },
+) {
   const listed = await taskboardRequest(
     `/api/tasks?projectId=${encodeURIComponent(request.taskboardProjectId)}&status=todo`,
+  );
+  const allTasks = await taskboardRequest(
+    `/api/tasks?projectId=${encodeURIComponent(request.taskboardProjectId)}`,
   );
   const results = [];
   for (const listedTask of listed.tasks ?? []) {
@@ -54,9 +60,15 @@ export async function dispatchLocalTodos(request, { request: taskboardRequest, r
         results.push(diagnostic);
         continue;
       }
-      const existing = task.threadBinding?.codexProjectKind === "local"
+      const savedBinding = task.threadBinding?.codexProjectKind === "local"
         ? task.threadBinding
         : null;
+      // A thread already referenced by another task is legacy shared state.
+      // Do not resume it: each task must have an independently traceable thread.
+      const existing = savedBinding && (
+        [...(allTasks.tasks ?? [])].filter((item) => item.id !== task.id)
+          .some((item) => (item.threadBinding?.threadId || item.threadId) === savedBinding.threadId)
+      ) ? null : savedBinding;
       target = existing ?? {
         threadId: null,
         codexProjectId: request.codexProjectId,
@@ -90,15 +102,45 @@ export async function dispatchLocalTodos(request, { request: taskboardRequest, r
           threadBinding: target,
         },
       })).task;
+      const completion = waitForTurn?.prepare(request.codexHostId, threadId);
       const turn = await rpc(request.codexHostId, "turn/start", {
         threadId,
         input: [{ type: "text", text: promptFor(task, comments, request) }],
         effort: request.reasoningEffort,
       });
+      const turnId = turn?.turn?.id ?? null;
+      if (completion && turnId) {
+        const completed = await completion.wait(turnId);
+        if (completed?.status !== "completed") {
+          throw new Error(completed?.error?.message || `Codex turn ${completed?.status || "failed"}`);
+        }
+        const finalText = completed.items?.slice().reverse()
+          .find((item) => item.type === "agentMessage")?.text?.trim() || "自动执行完成。";
+        await taskboardRequest(commentsPath, {
+          method: "POST",
+          body: {
+            body: [`自动认领执行完成。`, `- 独立 thread：${threadId}`, "", finalText]
+              .join("\n").slice(0, 100_000),
+            threadId,
+            threadBinding: target,
+          },
+        });
+        const reviewed = await taskboardRequest(`${taskPath}/move`, {
+          method: "POST",
+          body: {
+            version: owned.version,
+            status: "in_review",
+            threadId,
+            threadBinding: target,
+          },
+        });
+        owned = reviewed.task;
+      }
       diagnostic.state = "started";
       diagnostic.threadId = threadId;
-      diagnostic.turnId = turn?.turn?.id ?? null;
+      diagnostic.turnId = turnId;
       diagnostic.version = owned.version;
+      if (owned.status === "in_review") diagnostic.state = "in_review";
       results.push(diagnostic);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
