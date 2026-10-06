@@ -33,6 +33,12 @@ test("the resident injector authenticates its launcher-managed Taskboard service
   assert.match(source, /AbortSignal\.timeout\(1_500\)/);
   assert.match(source, /__CODEX_TASKBOARD_FRAME_CAPABILITY__/);
   assert.match(runtimeSource, /request\.frameCapability/);
+  const startTaskboardSource = source.slice(
+    source.indexOf("function startTaskboard"),
+    source.indexOf("async function publishTaskboardRuntime"),
+  );
+  assert.match(startTaskboardSource, /env: \{ \.\.\.process\.env, CODEX_TASKBOARD_REQUEST_LOG: "1" \}/);
+  assert.doesNotMatch(startTaskboardSource, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
 });
 
 test("the injector records Taskboard and renderer lifecycle evidence", () => {
