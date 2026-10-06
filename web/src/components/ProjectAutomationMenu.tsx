@@ -11,6 +11,7 @@ import type { AiChatModel } from "../types";
 type AutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
 type IntervalMinutes = 5 | 10 | 15 | 30 | 60;
+import { AutomationDiagnostics, type AutomationDiagnostic, type AutomationLastRun } from "./AutomationDiagnostics";
 
 interface AutomationOptions {
   enabledByUser: boolean;
@@ -23,6 +24,8 @@ interface AutomationOptions {
 interface AutomationState extends AutomationOptions {
   status: AutomationStatus;
   idleReason?: "checking-todos" | "waiting-todos";
+  diagnostics?: AutomationDiagnostic[];
+  lastRun?: AutomationLastRun;
   quota?: {
     state: AutomationQuotaState;
     checkedAt: number;
@@ -314,6 +317,9 @@ export function ProjectAutomationMenu({
               "Checking whether tasks can start. Auto-claim is paused until the check is complete.",
             )}
         </p>
+      )}
+      {automation?.diagnostics && automation.diagnostics.length > 0 && (
+        <AutomationDiagnostics diagnostics={automation.diagnostics} lastRun={automation.lastRun} />
       )}
       {unavailableReason && <p className="project-automation-note">{unavailableReason}</p>}
       {error && error !== unavailableReason && <p className="project-automation-error" role="alert">{error}</p>}

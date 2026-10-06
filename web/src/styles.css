@@ -1161,6 +1161,69 @@ kbd {
   color: var(--danger);
 }
 
+.automation-diagnostics {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.automation-diagnostics-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.automation-diagnostics-heading span,
+.automation-diagnostics-more {
+  color: var(--text-tertiary);
+}
+
+.automation-diagnostics-list {
+  display: grid;
+  gap: 6px;
+}
+
+.automation-diagnostic {
+  display: grid;
+  gap: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.automation-diagnostic-title {
+  display: flex;
+  gap: 6px;
+}
+
+.automation-diagnostic-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-diagnostic-reason {
+  color: var(--text-secondary);
+}
+
+.automation-diagnostic.is-ready .automation-diagnostic-reason {
+  color: var(--success, #2f8f57);
+}
+
+.automation-diagnostics.is-compact {
+  grid-column: 1 / -1;
+  margin: 8px 18px 0;
+}
+
+.automation-diagnostic + .automation-diagnostic {
+  padding-top: 6px;
+}
+
 .board-setting-switch {
   position: relative;
   width: 34px;

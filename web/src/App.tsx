@@ -78,6 +78,7 @@ import {
   RelationIcon,
 } from "./components/SemanticIcons";
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
+import { AutomationDiagnostics, type AutomationDiagnostic as AutomationDiagnosticView } from "./components/AutomationDiagnostics";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
@@ -211,6 +212,16 @@ type ProjectAutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
 type AutomationIdleReason = "checking-todos" | "waiting-todos";
 type AutomationIntervalMinutes = 5 | 10 | 15 | 30 | 60;
+type AutomationDiagnosticReason = "dependency" | "existing-binding" | "explicit-wait";
+
+type AutomationDiagnostic = AutomationDiagnosticView;
+
+interface AutomationLastRun {
+  state: "starting" | "completed" | "failed";
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+}
 
 interface AutomationQuotaStatus {
   state: AutomationQuotaState;
@@ -230,6 +241,8 @@ interface ProjectAutomationRecord {
   quotaAware: boolean;
   quota?: AutomationQuotaStatus;
   idleReason?: AutomationIdleReason;
+  diagnostics?: AutomationDiagnostic[];
+  lastRun?: AutomationLastRun;
   intervalMinutes: AutomationIntervalMinutes;
   model: string;
   reasoningEffort: string;
@@ -275,6 +288,8 @@ interface AutomationHostResponse {
   items?: AutomationHostItem[];
   quota?: AutomationQuotaStatus;
   idleReason?: AutomationIdleReason;
+  diagnostics?: AutomationDiagnostic[];
+  lastRun?: AutomationLastRun;
   policy?: {
     automationId?: string;
     codexProjectId: string;
@@ -464,6 +479,17 @@ function readProjectAutomations(): ProjectAutomations {
         || typeof quotaAware !== "boolean"
       ) continue;
       const quota = isAutomationQuotaStatus(candidate.quota) ? candidate.quota : undefined;
+      const diagnostics = Array.isArray(candidate.diagnostics)
+        ? candidate.diagnostics.filter((entry): entry is AutomationDiagnostic => (
+          Boolean(entry)
+          && typeof entry === "object"
+          && typeof (entry as AutomationDiagnostic).taskId === "string"
+          && typeof (entry as AutomationDiagnostic).identifier === "string"
+          && typeof (entry as AutomationDiagnostic).title === "string"
+          && ((entry as AutomationDiagnostic).state === "waiting" || (entry as AutomationDiagnostic).state === "ready")
+          && Array.isArray((entry as AutomationDiagnostic).reasons)
+        ))
+        : undefined;
       result[projectId] = {
         automationId: candidate.automationId,
         codexProjectId: candidate.codexProjectId,
@@ -476,6 +502,8 @@ function readProjectAutomations(): ProjectAutomations {
         ...(quota ? { quota } : {}),
         ...(candidate.idleReason === "checking-todos" || candidate.idleReason === "waiting-todos"
           ? { idleReason: candidate.idleReason } : {}),
+        ...(diagnostics ? { diagnostics } : {}),
+        ...(candidate.lastRun ? { lastRun: candidate.lastRun } : {}),
         intervalMinutes: candidate.intervalMinutes ?? 5,
         model,
         reasoningEffort,
@@ -1430,6 +1458,8 @@ export function App() {
           quotaAware: policy.quotaAware,
           ...(response.quota ? { quota: response.quota } : {}),
           idleReason: response.idleReason,
+          diagnostics: response.diagnostics,
+          lastRun: response.lastRun,
           intervalMinutes: policy.intervalMinutes,
           model: policy.model,
           reasoningEffort: policy.reasoningEffort,
@@ -1525,6 +1555,8 @@ export function App() {
             quotaAware: policy?.quotaAware ?? stored.quotaAware,
             ...(response.quota ? { quota: response.quota } : {}),
             idleReason: response.idleReason,
+            diagnostics: response.diagnostics,
+            lastRun: response.lastRun,
             intervalMinutes: policy?.intervalMinutes ?? stored.intervalMinutes,
             model: policy?.model ?? stored.model,
             reasoningEffort: policy?.reasoningEffort ?? stored.reasoningEffort,
@@ -1550,7 +1582,9 @@ export function App() {
               ? { quota: stored.quota }
               : {}
         ),
-        idleReason: response.idleReason,
+          idleReason: response.idleReason,
+          diagnostics: response.diagnostics,
+          lastRun: response.lastRun,
         intervalMinutes,
         model: policy?.model ?? item.model,
         reasoningEffort: policy?.reasoningEffort ?? item.reasoningEffort,
@@ -3886,6 +3920,11 @@ export function App() {
               "--other-tasks-width": otherTasksWidth,
             } as CSSProperties}
           >
+            <AutomationDiagnostics
+              diagnostics={selectedProjectAutomation?.diagnostics ?? []}
+              lastRun={selectedProjectAutomation?.lastRun}
+              compact
+            />
             {tasksLoading && !hasLoadedTasks ? (
               <div className="loading-board" aria-label={text("正在加载议题", "Loading issues")} aria-busy="true">
                 {mainBoardItems.map((item) => (
@@ -3986,6 +4025,7 @@ export function App() {
                     onDragEnter={setDropTarget}
                     onDrop={finishTaskDrop}
                     onOpenConversation={openTaskConversation}
+                    automationDiagnostics={selectedProjectAutomation?.diagnostics ?? []}
                   />
                 )}
               </>

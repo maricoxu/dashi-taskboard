@@ -36,6 +36,7 @@ import {
   reconcileInjectionRuntime,
   restartResidentInjector,
 } from "./codex-injector-runtime.mjs";
+import { dispatchLocalTodos } from "./taskboard-local-dispatch.mjs";
 import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
 import { createTaskboardSupervisor } from "./taskboard-supervisor.mjs";
 import {
@@ -223,6 +224,7 @@ const taskConversationFailureTtlMs = 120_000;
 const quotaPolicyTimers = new Map();
 const quotaPolicyRecords = new Map();
 const quotaPolicyQueues = new Map();
+const localAutomationRunPromises = new Map();
 const quotaPolicyCdps = new Set();
 const restoredQuotaPolicyCdps = new WeakSet();
 const quotaPolicyRestorePromises = new WeakMap();
@@ -1898,6 +1900,7 @@ async function taskboardRequest(pathname, { method = "GET", body } = {}) {
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: typeof AbortSignal === "undefined" ? undefined : AbortSignal.timeout(8_000),
   });
   const text = await response.text();
   let payload = {};
@@ -2367,6 +2370,43 @@ async function runRemoteTaskboardAutomation(record) {
   }
 }
 
+async function runLocalTaskboardAutomation(record) {
+  const key = record.request.taskboardProjectId;
+  if (localAutomationRunPromises.has(key)) return localAutomationRunPromises.get(key);
+  const stillCurrent = () => quotaPolicyRecords.get(key) === record && record.request.enabledByUser;
+  if (!stillCurrent()) return;
+  const startedAt = Date.now();
+  record.lastRun = { state: "starting", startedAt };
+  const run = (async () => {
+    await persistQuotaPolicies();
+    try {
+      record.diagnostics = await dispatchLocalTodos(record.request, {
+        request: taskboardRequest,
+        rpc: (hostId, method, params) => requestCodexAppServerViaCdp(
+          currentQuotaPolicyCdp(), undefined, hostId, method, params,
+        ),
+        stillCurrent,
+        runtimeFile: taskboardRuntimeFile,
+        cliPath: path.join(projectRoot, "cli", "taskctl.mjs"),
+      });
+      record.lastRun = { state: "completed", startedAt, finishedAt: Date.now() };
+    } catch (error) {
+      record.lastRun = { state: "failed", startedAt, finishedAt: Date.now(), error: error.message };
+    } finally {
+      // The interval starts after the dispatch pass, not after each worker finishes.
+      record.nextRunAt = Date.now() + record.request.intervalMinutes * 60_000;
+      await persistQuotaPolicies();
+      console.log(JSON.stringify({ taskboardAutoClaim: {
+        projectId: key, ...record.lastRun,
+        tasks: (record.diagnostics ?? []).map(({ identifier, state }) => ({ identifier, state })),
+      } }));
+    }
+  })();
+  localAutomationRunPromises.set(key, run);
+  try { return await run; }
+  finally { if (localAutomationRunPromises.get(key) === run) localAutomationRunPromises.delete(key); }
+}
+
 function remoteAutomationItem(request, status, nextRunAt) {
   return {
     id: request.automationId || `taskboard-${request.taskboardProjectId}`,
@@ -2412,7 +2452,7 @@ async function evaluateLocalAutomationTodos(record) {
   const listed = await taskboardRequest(
     `/api/tasks?projectId=${encodeURIComponent(request.taskboardProjectId)}&status=todo`,
   );
-  const { candidates, snapshot } = await localAutomationTodoInputs(request, listed.tasks);
+  const { candidates, diagnostics, snapshot } = await localAutomationTodoInputs(request, listed.tasks);
   if (!stillCurrent() || snapshot !== todoGate?.snapshot || todoGate.state !== "checking") return;
   let state = "wait";
   for (const { task, comments } of candidates) {
@@ -2422,7 +2462,7 @@ async function evaluateLocalAutomationTodos(record) {
       break;
     }
   }
-  return stillCurrent() ? { version, snapshot, state } : undefined;
+  return stillCurrent() ? { version, snapshot, state, diagnostics } : undefined;
 }
 
 async function applyTaskboardAutomationPolicy(
@@ -2452,6 +2492,19 @@ async function applyTaskboardAutomationPolicy(
     ? await readCodexQuotaStatus(request.model)
     : null;
   if (!stillCurrent()) return { quota, stale: true };
+  if (request.codexProjectKind === "local") {
+    const record = quotaPolicyRecords.get(request.taskboardProjectId);
+    const active = request.enabledByUser && (!request.quotaAware || quota?.state === "available");
+    const nextRunAt = active ? (record?.nextRunAt ?? Date.now()) : null;
+    const item = remoteAutomationItem(request, active ? "ACTIVE" : "PAUSED", nextRunAt);
+    const localGate = active && todoPayload?.tasks
+      ? await localAutomationTodoGate(request, todoPayload.tasks, previousTodoGate, evaluatedTodoGate)
+      : undefined;
+    return { item, items: [item], operation: active ? "ensure-active" : "pause", hasTodo,
+      todoGate: localGate,
+      diagnostics: localGate?.diagnostics ?? record?.diagnostics ?? [], lastRun: record?.lastRun,
+      ...(quota ? { quota } : {}) };
+  }
   if (request.codexProjectKind === "remote") {
     const currentStatus = request.enabledByUser
       && (!request.quotaAware || previousQuotaState === "available")
@@ -2497,6 +2550,7 @@ async function applyTaskboardAutomationPolicy(
     ) ?? items[0];
   }
   let todoGate = request.enabledByUser && hasTodo ? previousTodoGate : undefined;
+  let diagnostics = [];
   let operation = taskboardAutomationPolicyOperation(request, {
     explicit,
     hasTodo,
@@ -2509,6 +2563,7 @@ async function applyTaskboardAutomationPolicy(
     todoGate = await localAutomationTodoGate(
       request, todoPayload.tasks, todoGate, evaluatedTodoGate,
     );
+    diagnostics = todoGate?.diagnostics ?? [];
     if (todoGate && todoGate.state !== "start") operation = "pause";
   } else if (operation === "list") {
     todoGate = undefined; // A native/manual pause is not an automatic wait.
@@ -2521,12 +2576,12 @@ async function applyTaskboardAutomationPolicy(
     ? { item: currentItem, items: listed.items }
     : await reconcileTaskboardAutomation({ ...request, operation }, rpc);
   if (result?.error === "not-found") {
-    return { operation, hasTodo, todoGate, idleReason, ...(quota ? { quota } : {}) };
+    return { operation, hasTodo, todoGate, diagnostics, idleReason, ...(quota ? { quota } : {}) };
   }
-  return { ...result, operation, hasTodo, todoGate, idleReason, ...(quota ? { quota } : {}) };
+  return { ...result, operation, hasTodo, todoGate, diagnostics, idleReason, ...(quota ? { quota } : {}) };
 }
 
-function storedAutomationPolicy(request) {
+function storedAutomationPolicy(request, diagnostics = [], lastRun = null) {
   return {
     taskboardProjectId: request.taskboardProjectId,
     codexProjectId: request.codexProjectId,
@@ -2543,12 +2598,14 @@ function storedAutomationPolicy(request) {
     intervalMinutes: request.intervalMinutes,
     model: request.model,
     reasoningEffort: request.reasoningEffort,
+    diagnostics,
+    ...(lastRun ? { lastRun } : {}),
   };
 }
 
 function restoredAutomationPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const { nextRunAt, quota, todoGate, ...stored } = value;
+  const { nextRunAt, quota, todoGate, diagnostics, lastRun, ...stored } = value;
   const request = parseTaskboardAutomationHostRequest({
     ...stored,
     id: "restored-policy",
@@ -2562,6 +2619,8 @@ function restoredAutomationPolicy(value) {
       ...(quota ? { quota } : {}),
       ...(todoGate && typeof todoGate.snapshot === "string"
         && ["checking", "wait", "start"].includes(todoGate.state) ? { todoGate } : {}),
+      ...(Array.isArray(diagnostics) ? { diagnostics } : {}),
+      ...(lastRun && typeof lastRun === "object" ? { lastRun } : {}),
       ...(Number.isFinite(nextRunAt) ? { nextRunAt } : {}),
     }
     : null;
@@ -2594,7 +2653,7 @@ function persistQuotaPolicies() {
     [...quotaPolicyRecords.entries()].map(([projectId, record]) => [
       projectId,
       {
-        ...storedAutomationPolicy(record.request),
+        ...storedAutomationPolicy(record.request, record.diagnostics, record.lastRun),
         ...(record.quota ? { quota: record.quota } : {}),
         ...(record.todoGate ? { todoGate: record.todoGate } : {}),
         ...(Number.isFinite(record.nextRunAt) ? { nextRunAt: record.nextRunAt } : {}),
@@ -2637,6 +2696,24 @@ function scheduleQuotaPolicyCheck(record, result) {
   if (previous) clearTimeout(previous);
   quotaPolicyTimers.delete(key);
   if (!request.enabledByUser) return;
+  if (request.codexProjectKind === "local") {
+    if (result.item?.status !== "ACTIVE") {
+      const timer = setTimeout(() => {
+        void enqueueCurrentQuotaPolicy(key).catch((error) => {
+          record.lastRun = { state: "failed", startedAt: Date.now(), error: error.message };
+          void persistQuotaPolicies().catch(() => {});
+        });
+      }, 60_000);
+      timer.unref(); quotaPolicyTimers.set(key, timer); return;
+    }
+    const due = Number.isFinite(record.nextRunAt) ? record.nextRunAt : Date.now();
+    const timer = setTimeout(async () => {
+      if (quotaPolicyRecords.get(key) !== record || !record.request.enabledByUser) return;
+      await runLocalTaskboardAutomation(record);
+      if (quotaPolicyRecords.get(key) === record) scheduleQuotaPolicyCheck(record, result);
+    }, Math.max(0, due - Date.now()));
+    timer.unref(); quotaPolicyTimers.set(key, timer); return;
+  }
 
   const nextRunAt = Number(result.item?.nextRunAt);
   const checkTodos = false;
@@ -2704,7 +2781,7 @@ function enqueueQuotaPolicyMutation(record, rpc, { explicit = false, evaluatedTo
         },
       );
       if (result.stale) return result;
-      if (result.hasTodo === false && result.operation === "pause") {
+      if (current.request.codexProjectKind !== "local" && result.hasTodo === false && result.operation === "pause") {
         current.version += 1;
         current.request = { ...current.request, enabledByUser: false };
       } else if (!explicit && result.operation === "list" && result.item?.status === "PAUSED") {
@@ -2714,7 +2791,7 @@ function enqueueQuotaPolicyMutation(record, rpc, { explicit = false, evaluatedTo
       if (result.item?.id) {
         current.request = { ...current.request, automationId: result.item.id };
       }
-      if (current.request.codexProjectKind === "remote") {
+      if (current.request.codexProjectKind === "remote" || current.request.codexProjectKind === "local") {
         const nextRunAt = Number(result.item?.nextRunAt);
         if (result.item?.status === "ACTIVE" && Number.isFinite(nextRunAt)) {
           current.nextRunAt = nextRunAt;
@@ -2724,6 +2801,7 @@ function enqueueQuotaPolicyMutation(record, rpc, { explicit = false, evaluatedTo
       }
       if (result.todoGate) current.todoGate = result.todoGate;
       else delete current.todoGate;
+      current.diagnostics = result.diagnostics ?? current.diagnostics ?? [];
       if (current.request.quotaAware && result.quota) current.quota = result.quota;
       else if (!current.request.quotaAware) delete current.quota;
       await persistQuotaPolicies();
@@ -2752,7 +2830,9 @@ async function updateAndApplyQuotaPolicy(request, rpc) {
     const current = quotaPolicyRecords.get(request.taskboardProjectId);
     return {
       ...result,
-      policy: storedAutomationPolicy(current.request),
+      lastRun: current.lastRun,
+      diagnostics: current.diagnostics ?? [],
+      policy: storedAutomationPolicy(current.request, current.diagnostics, current.lastRun),
       ...(current.quota ? { quota: current.quota } : {}),
     };
   } catch (error) {
@@ -2795,7 +2875,9 @@ async function reconcileStoredAutomationPolicy(request, rpc) {
   const current = quotaPolicyRecords.get(projectId);
   return {
     ...result,
-    policy: storedAutomationPolicy(current.request),
+    lastRun: current.lastRun,
+    diagnostics: current.diagnostics ?? [],
+    policy: storedAutomationPolicy(current.request, current.diagnostics, current.lastRun),
     ...(current.quota ? { quota: current.quota } : {}),
   };
 }
