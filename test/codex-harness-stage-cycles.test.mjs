@@ -24,6 +24,7 @@ test("Codex app-server stage transitions remain valid over repeated API cycles",
   }
   const report = resources.report();
   assert.equal(report.gpu.memoryBytes === null || Number.isFinite(report.gpu.memoryBytes), true);
+  assert.ok(Number.isFinite(report.cpuUtilizationPeakPercent));
   assert.ok(report.rssPeakBytes - report.rssStartBytes < 256 * 1024 * 1024);
   const protocol = simulator.assertProtocol();
   assert.deepEqual(protocol.methods.sort(), ["thread/read", "thread/resume", "thread/start", "turn/start"].sort());
