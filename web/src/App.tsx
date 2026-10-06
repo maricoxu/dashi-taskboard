@@ -631,6 +631,7 @@ function LocalRealtimeSync({
 }: LocalRealtimeSyncProps) {
   const selectionRef = useRef({ selectedProjectId, detailTaskId });
   const eventsUrl = resolveTaskboardUrl("/api/events");
+  const refreshOwnerId = useRef(crypto.randomUUID());
 
   useLayoutEffect(() => {
     selectionRef.current = { selectedProjectId, detailTaskId };
@@ -640,14 +641,64 @@ function LocalRealtimeSync({
     if (isEmbeddedHost()) {
       setConnection("live");
       void refreshProjectBoardDisplaySettings();
-      const refresh = () => {
-        const { selectedProjectId } = selectionRef.current;
-        void refreshProjectList();
-        if (selectedProjectId) void refreshTasks(selectedProjectId, { quiet: true });
+      let disposed = false;
+      let refreshTimer: number | undefined;
+      let refreshInFlight = false;
+      let failureCount = 0;
+      let revision = 0;
+      const ownsRefreshLease = () => {
+        const key = "taskboard.embedded-refresh-owner";
+        const now = Date.now();
+        const current = taskboardStorage.getItem(key);
+        if (current) {
+          try {
+            const parsed = JSON.parse(current) as { owner?: string; expiresAt?: number };
+            if (parsed.owner !== refreshOwnerId.current && (parsed.expiresAt ?? 0) > now) return false;
+          } catch {}
+        }
+        taskboardStorage.setItem(key, JSON.stringify({ owner: refreshOwnerId.current, expiresAt: now + 5_000 }));
+        return true;
       };
-      refresh();
-      const timer = window.setInterval(refresh, 2_500);
-      return () => window.clearInterval(timer);
+      const refresh = async () => {
+        if (disposed || refreshInFlight) return;
+        if (!ownsRefreshLease()) {
+          refreshTimer = window.setTimeout(() => void refresh(), 1_000);
+          return;
+        }
+        refreshInFlight = true;
+        const { selectedProjectId } = selectionRef.current;
+        try {
+          await refreshProjectList();
+          if (selectedProjectId) await refreshTasks(selectedProjectId, { quiet: true });
+          failureCount = 0;
+        } catch {
+          failureCount = Math.min(failureCount + 1, 5);
+        } finally {
+          refreshInFlight = false;
+        }
+      };
+      const checkRevision = async () => {
+        if (disposed || refreshInFlight || !ownsRefreshLease()) {
+          if (!disposed) refreshTimer = window.setTimeout(() => void checkRevision(), 1_000);
+          return;
+        }
+        try {
+          const result = await getTaskboardRevision(revision);
+          revision = Math.max(revision, result.revision);
+          if (result.changed) await refresh();
+          refreshTimer = window.setTimeout(() => void checkRevision(), 2_500);
+        } catch {
+          failureCount = Math.min(failureCount + 1, 5);
+          refreshTimer = window.setTimeout(() => void checkRevision(), Math.min(2_500 * (2 ** failureCount), 30_000));
+        }
+      };
+      void refresh().then(() => {
+        if (!disposed) void checkRevision();
+      });
+      return () => {
+        disposed = true;
+        window.clearTimeout(refreshTimer);
+      };
     }
     const source = new EventSource(eventsUrl);
     let refreshTimer: number | undefined;
@@ -905,6 +956,7 @@ export function App() {
   const [automationCatalogError, setAutomationCatalogError] = useState<string | null>(null);
   const projectsRequestRef = useRef(0);
   const tasksRequestRef = useRef(0);
+  const tasksRefreshInFlightRef = useRef(new Map<string, Promise<void>>());
   const tasksRef = useRef<Task[]>([]);
   const undoSequenceRef = useRef(0);
   const undoStackRef = useRef<UndoOperation[]>([]);
@@ -2093,16 +2145,20 @@ export function App() {
     projectId: string,
     options: { quiet?: boolean; signal?: AbortSignal } = {},
   ) => {
+    const taskProjectId = projectId === ALL_PROJECTS_ID ? "__all__" : projectId;
+    const existing = tasksRefreshInFlightRef.current.get(taskProjectId);
+    if (existing) return existing;
+    const refreshPromise = (async () => {
     const requestId = ++tasksRequestRef.current;
     if (!options.quiet) setTasksLoading(true);
     setTasksLoadError((current) => (
       current ? { ...current, requestId } : current
     ));
     try {
-      const taskProjectId = projectId === ALL_PROJECTS_ID ? undefined : projectId;
+      const taskProjectFilter = projectId === ALL_PROJECTS_ID ? undefined : projectId;
       const [nextTasks, nextArchivedTasks] = await Promise.all([
-        listTasks(taskProjectId, options.signal),
-        listArchivedTasks(taskProjectId, options.signal),
+        listTasks(taskProjectFilter, options.signal),
+        listArchivedTasks(taskProjectFilter, options.signal),
       ]);
       if (requestId !== tasksRequestRef.current) return;
       setTasks(sortTasks(nextTasks));
@@ -2124,6 +2180,14 @@ export function App() {
       }
     } finally {
       if (!options.quiet && requestId === tasksRequestRef.current) setTasksLoading(false);
+    }
+    })();
+    tasksRefreshInFlightRef.current.set(taskProjectId, refreshPromise);
+    try { return await refreshPromise; }
+    finally {
+      if (tasksRefreshInFlightRef.current.get(taskProjectId) === refreshPromise) {
+        tasksRefreshInFlightRef.current.delete(taskProjectId);
+      }
     }
   }, []);
 
