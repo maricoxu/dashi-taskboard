@@ -37,6 +37,8 @@
     "taskboard:handoff": "node scripts/taskboard-handoff.mjs",
     "taskboard:sync": "node scripts/taskboard-handoff.mjs",
     "test": "node --test && npm run test:components",
+    "test:harness": "node --test test/codex-harness-*.test.mjs",
+    "test:stress": "node --test test/codex-harness-startup.test.mjs test/codex-harness-stage-cycles.test.mjs",
     "test:components": "vitest run web/src/components/MarkdownDocument.test.tsx --environment jsdom",
     "test:cloud": "node --test test/cloud-shared-worker.test.mjs",
     "cloud:migrate:local": "wrangler d1 migrations apply codex-taskboard-db --local",
