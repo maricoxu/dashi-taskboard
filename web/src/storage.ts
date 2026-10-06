@@ -28,11 +28,12 @@ async function readServerStorage() {
       if (isProjectBoardDisplaySettingsKey(key)) memoryStorage.set(key, value);
     }
     return;
-  }
-  memoryStorage.clear();
-  for (const [key, value] of Object.entries(payload.entries)) {
-    memoryStorage.set(key, value);
-  }
+    }
+    memoryStorage.clear();
+    for (const [key, value] of Object.entries(payload.entries)) {
+      if (isVolatileStorageKey(key)) continue;
+      memoryStorage.set(key, value);
+    }
   serverBacked = true;
 }
 
