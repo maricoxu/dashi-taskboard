@@ -39,6 +39,7 @@ test("local dispatch continues after one task fails and starts later todos", asy
     if (pathname === "/api/tasks?projectId=local&status=todo") {
       return { tasks: tasks.filter((item) => item.status === "todo") };
     }
+    if (pathname === "/api/tasks?projectId=local") return { tasks };
     const match = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(comments|move))?$/);
     assert.ok(match, pathname);
     const item = tasks.find((candidate) => candidate.id === decodeURIComponent(match[1]));
@@ -63,6 +64,7 @@ test("local dispatch continues after one task fails and starts later todos", asy
   const result = await dispatchLocalTodos(request, {
     request: taskboardRequest,
     rpc,
+    waitForTurn: undefined,
     stillCurrent: () => true,
   });
 
@@ -81,6 +83,7 @@ test("local dispatch blocks a task after ownership when its turn fails", async (
   const comments = [];
   const taskboardRequest = async (pathname, options = {}) => {
     if (pathname === "/api/tasks?projectId=local&status=todo") return { tasks: [item] };
+    if (pathname === "/api/tasks?projectId=local") return { tasks: [item] };
     if (pathname.endsWith("/comments")) {
       if (options.method === "POST") comments.push(
         typeof options.body === "string" ? JSON.parse(options.body) : options.body,
@@ -109,4 +112,72 @@ test("local dispatch blocks a task after ownership when its turn fails", async (
   assert.equal(result[0].state, "blocked");
   assert.equal(item.status, "blocked");
   assert.match(comments[0].body, /turn failed/);
+});
+
+test("a legacy shared binding creates an independent thread", async () => {
+  const first = task("5");
+  const second = task("6");
+  const shared = {
+    threadId: "shared-thread",
+    codexProjectId: "project-local",
+    codexProjectKind: "local",
+    codexHostId: "local",
+    workspacePath: "/workspace",
+  };
+  first.status = "in_progress";
+  first.threadId = shared.threadId;
+  first.threadBinding = shared;
+  const tasks = [first, second];
+  const calls = [];
+  const taskboardRequest = async (pathname, options = {}) => {
+    calls.push({ pathname, options });
+    if (pathname === "/api/tasks?projectId=local&status=todo") return { tasks: [second] };
+    if (pathname === "/api/tasks?projectId=local") return { tasks };
+    if (pathname.endsWith("/comments")) return { comments: [] };
+    if (pathname.endsWith("/move")) {
+      const body = typeof options.body === "string" ? JSON.parse(options.body) : options.body;
+      Object.assign(second, body, { version: second.version + 1 });
+      return { task: second };
+    }
+    return { task: second };
+  };
+  const rpc = async (_hostId, method) => {
+    if (method === "thread/start") return { thread: { id: "独立-thread" } };
+    if (method === "turn/start") return { turn: { id: "独立-turn" } };
+    throw new Error(`unexpected ${method}`);
+  };
+  await dispatchLocalTodos(request, { request: taskboardRequest, rpc, stillCurrent: () => true });
+  assert.equal(second.threadId, "独立-thread");
+  assert.equal(calls.some((call) => call.method === "thread/resume"), false);
+});
+
+test("a completed turn writes evidence and moves the task to review", async () => {
+  const item = task("7");
+  const comments = [];
+  const taskboardRequest = async (pathname, options = {}) => {
+    if (pathname === "/api/tasks?projectId=local&status=todo") return { tasks: [item] };
+    if (pathname === "/api/tasks?projectId=local") return { tasks: [item] };
+    if (pathname.endsWith("/comments")) {
+      if (options.method === "POST") comments.push(typeof options.body === "string" ? JSON.parse(options.body) : options.body);
+      return { comments };
+    }
+    if (pathname.endsWith("/move")) {
+      const body = typeof options.body === "string" ? JSON.parse(options.body) : options.body;
+      Object.assign(item, body, { version: item.version + 1 });
+      return { task: item };
+    }
+    return { task: item };
+  };
+  const rpc = async (_hostId, method) => method === "thread/start"
+    ? { thread: { id: "thread-7" } }
+    : { turn: { id: "turn-7" } };
+  const waitForTurn = {
+    prepare() {
+      return { wait: async () => ({ status: "completed", items: [{ type: "agentMessage", text: "done" }] }) };
+    },
+  };
+  const result = await dispatchLocalTodos(request, { request: taskboardRequest, rpc, waitForTurn, stillCurrent: () => true });
+  assert.equal(result[0].state, "in_review");
+  assert.equal(item.status, "in_review");
+  assert.match(comments[0].body, /done/);
 });

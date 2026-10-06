@@ -2380,11 +2380,19 @@ async function runLocalTaskboardAutomation(record) {
   const run = (async () => {
     await persistQuotaPolicies();
     try {
+      const healthyCdp = await healthyQuotaPolicyCdp();
+      const waitForTurn = {
+        prepare(hostId, threadId) {
+          const completion = waitForRemoteAutomationTurn(hostId, threadId);
+          return { wait: (turnId) => completion.wait(turnId, "Codex local automation turn timed out") };
+        },
+      };
       record.diagnostics = await dispatchLocalTodos(record.request, {
         request: taskboardRequest,
         rpc: (hostId, method, params) => requestCodexAppServerViaCdp(
-          currentQuotaPolicyCdp(), undefined, hostId, method, params,
+          healthyCdp, undefined, hostId, method, params,
         ),
+        waitForTurn,
         stillCurrent,
         runtimeFile: taskboardRuntimeFile,
         cliPath: path.join(projectRoot, "cli", "taskctl.mjs"),
@@ -2687,6 +2695,31 @@ function currentQuotaPolicyCdp() {
     quotaPolicyCdps.delete(cdp);
   }
   throw new Error("No live Codex renderer is available for quota automation");
+}
+
+async function healthyQuotaPolicyCdp() {
+  const candidates = [...quotaPolicyCdps].reverse();
+  let lastError = null;
+  for (const cdp of candidates) {
+    if (cdp.closed) {
+      quotaPolicyCdps.delete(cdp);
+      continue;
+    }
+    try {
+      await requestCodexAppServerViaCdp(
+        cdp,
+        undefined,
+        "local",
+        "account/read",
+        { refreshToken: false },
+        3_000,
+      );
+      return cdp;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("No healthy Codex renderer is available for quota automation");
 }
 
 function scheduleQuotaPolicyCheck(record, result) {
