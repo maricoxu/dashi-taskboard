@@ -2419,6 +2419,10 @@ async function runLocalTaskboardAutomation(record) {
     try {
       const healthyCdp = await healthyQuotaPolicyCdp();
       const waitForTurn = {
+        // A local automation pass only needs to start Codex work. Waiting for
+        // rollout completion here used to turn a successful turn/start into a
+        // false failure when the observer could not find an old rollout.
+        awaitCompletion: false,
         prepare(hostId, threadId) {
           const completion = waitForRemoteAutomationTurn(hostId, threadId);
           return { wait: (turnId) => completion.wait(turnId, "Codex local automation turn timed out") };
@@ -2439,7 +2443,16 @@ async function runLocalTaskboardAutomation(record) {
       record.lastRun = { state: "failed", startedAt, finishedAt: Date.now(), error: error.message };
     } finally {
       // The interval starts after the dispatch pass, not after each worker finishes.
-      record.nextRunAt = Date.now() + record.request.intervalMinutes * 60_000;
+      // A renderer/CDP transport failure is transient: retry quickly so a
+      // reconnect does not leave the board idle for a full five minutes.
+      const retryableFailure = (record.diagnostics ?? []).some((diagnostic) => (
+        diagnostic.state === "failed"
+        && /CDP|WebSocket|renderer|App Server request timed out|No live Codex/i
+          .test((diagnostic.reasons ?? []).join(" "))
+      ));
+      record.nextRunAt = Date.now() + (
+        retryableFailure ? 10_000 : record.request.intervalMinutes * 60_000
+      );
       await persistQuotaPolicies();
       console.log(JSON.stringify({ taskboardAutoClaim: {
         projectId: key, ...record.lastRun,
@@ -2687,6 +2700,12 @@ async function ensureQuotaPoliciesLoaded() {
       quotaPolicyRecords.set(restored.request.taskboardProjectId, {
         version: 1,
         ...restored,
+        // Restoring the local companion is the equivalent of starting the
+        // automation. Run the first pass immediately; later passes are
+        // scheduled from the end of that pass using the configured interval.
+        ...(restored.request.codexProjectKind === "local" && restored.request.enabledByUser
+          ? { nextRunAt: Date.now() }
+          : {}),
       });
     }
   })();

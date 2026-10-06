@@ -21,6 +21,11 @@ function promptFor(task, comments, request) {
   ].join("\n\n");
 }
 
+function isStaleThreadBindingError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no rollout found|rollout .*not found|thread .*not found|thread .*closed|session .*not found/i.test(message);
+}
+
 export async function dispatchLocalTodos(
   request,
   { request: taskboardRequest, rpc, waitForTurn, stillCurrent },
@@ -78,8 +83,25 @@ export async function dispatchLocalTodos(
       };
       if (existing) {
         threadId = existing.threadId;
-        await rpc(existing.codexHostId, "thread/resume", { threadId });
-      } else {
+        try {
+          await rpc(existing.codexHostId, "thread/resume", { threadId });
+        } catch (error) {
+          if (!isStaleThreadBindingError(error)) throw error;
+          // A saved local binding can outlive the Codex rollout/session store.
+          // Treat it as stale and create a fresh independent thread now; do
+          // not leave the todo task waiting for the next five-minute pass.
+          diagnostic.reasons.push(`旧 thread 已失效，重新创建执行线程：${error instanceof Error ? error.message : String(error)}`);
+          threadId = null;
+          target = {
+            threadId: null,
+            codexProjectId: request.codexProjectId,
+            codexProjectKind: "local",
+            codexHostId: request.codexHostId,
+            workspacePath: request.workspacePath,
+          };
+        }
+      }
+      if (!threadId) {
         const started = await rpc(request.codexHostId, "thread/start", {
           model: request.model,
           cwd: request.workspacePath,
@@ -110,31 +132,68 @@ export async function dispatchLocalTodos(
       });
       const turnId = turn?.turn?.id ?? null;
       if (completion && turnId) {
-        const completed = await completion.wait(turnId);
-        if (completed?.status !== "completed") {
-          throw new Error(completed?.error?.message || `Codex turn ${completed?.status || "failed"}`);
+        const completeTurn = async () => {
+          const completed = await completion.wait(turnId);
+          if (completed?.status !== "completed") {
+            throw new Error(completed?.error?.message || `Codex turn ${completed?.status || "failed"}`);
+          }
+          const finalText = completed.items?.slice().reverse()
+            .find((item) => item.type === "agentMessage")?.text?.trim() || "自动执行完成。";
+          await taskboardRequest(commentsPath, {
+            method: "POST",
+            body: {
+              body: [`自动认领执行完成。`, `- 独立 thread：${threadId}`, "", finalText]
+                .join("\n").slice(0, 100_000),
+              threadId,
+              threadBinding: target,
+            },
+          });
+          const reviewed = await taskboardRequest(`${taskPath}/move`, {
+            method: "POST",
+            body: {
+              version: owned.version,
+              status: "in_review",
+              threadId,
+              threadBinding: target,
+            },
+          });
+          owned = reviewed.task;
+        };
+        if (waitForTurn?.awaitCompletion === false) {
+          // Starting a local turn must not hold the automation pass hostage to
+          // Codex's rollout observer. Completion is reconciled asynchronously;
+          // a real terminal error is written back to the task as blocked.
+          void completeTurn().catch(async (error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            try {
+              const current = (await taskboardRequest(taskPath)).task;
+              if (current?.status !== "in_progress" || current.threadId !== threadId) return;
+              await taskboardRequest(commentsPath, {
+                method: "POST",
+                body: {
+                  body: `自动认领执行失败，任务已阻塞：${message}`.slice(0, 100_000),
+                  threadId,
+                  threadBinding: target,
+                },
+              });
+              await taskboardRequest(`${taskPath}/move`, {
+                method: "POST",
+                body: {
+                  version: current.version,
+                  status: "blocked",
+                  threadId,
+                  threadBinding: target,
+                },
+              });
+            } catch (writeError) {
+              // The original error is already visible in the Codex source log;
+              // do not create an unhandled rejection while reporting it.
+              console.error(`Taskboard local turn reconciliation failed: ${writeError.message}`);
+            }
+          });
+        } else {
+          await completeTurn();
         }
-        const finalText = completed.items?.slice().reverse()
-          .find((item) => item.type === "agentMessage")?.text?.trim() || "自动执行完成。";
-        await taskboardRequest(commentsPath, {
-          method: "POST",
-          body: {
-            body: [`自动认领执行完成。`, `- 独立 thread：${threadId}`, "", finalText]
-              .join("\n").slice(0, 100_000),
-            threadId,
-            threadBinding: target,
-          },
-        });
-        const reviewed = await taskboardRequest(`${taskPath}/move`, {
-          method: "POST",
-          body: {
-            version: owned.version,
-            status: "in_review",
-            threadId,
-            threadBinding: target,
-          },
-        });
-        owned = reviewed.task;
       }
       diagnostic.state = "started";
       diagnostic.threadId = threadId;

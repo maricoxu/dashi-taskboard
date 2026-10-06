@@ -181,3 +181,69 @@ test("a completed turn writes evidence and moves the task to review", async () =
   assert.equal(item.status, "in_review");
   assert.match(comments[0].body, /done/);
 });
+
+test("an expired saved binding is replaced immediately", async () => {
+  const item = task("8");
+  item.threadBinding = {
+    threadId: "expired-thread",
+    codexProjectId: "project-local",
+    codexProjectKind: "local",
+    codexHostId: "local",
+    workspacePath: "/workspace",
+  };
+  const calls = [];
+  const taskboardRequest = async (pathname, options = {}) => {
+    calls.push({ pathname, options });
+    if (pathname === "/api/tasks?projectId=local&status=todo") return { tasks: [item] };
+    if (pathname === "/api/tasks?projectId=local") return { tasks: [item] };
+    if (pathname.endsWith("/comments")) return { comments: [] };
+    if (pathname.endsWith("/move")) {
+      const body = typeof options.body === "string" ? JSON.parse(options.body) : options.body;
+      Object.assign(item, body, { version: item.version + 1 });
+      return { task: item };
+    }
+    return { task: item };
+  };
+  const rpcMethods = [];
+  const rpc = async (_hostId, method) => {
+    rpcMethods.push(method);
+    if (method === "thread/resume") throw new Error("no rollout found for thread id expired-thread");
+    if (method === "thread/start") return { thread: { id: "fresh-thread" } };
+    if (method === "turn/start") return { turn: { id: "fresh-turn" } };
+    throw new Error(`unexpected ${method}`);
+  };
+  const result = await dispatchLocalTodos(request, { request: taskboardRequest, rpc, stillCurrent: () => true });
+  assert.equal(result[0].state, "started");
+  assert.equal(item.threadId, "fresh-thread");
+  assert.equal(rpcMethods.includes("thread/resume"), true);
+});
+
+test("local automation can return after turn/start and reconcile in the background", async () => {
+  const item = task("9");
+  const taskboardRequest = async (pathname, options = {}) => {
+    if (pathname === "/api/tasks?projectId=local&status=todo") return { tasks: [item] };
+    if (pathname === "/api/tasks?projectId=local") return { tasks: [item] };
+    if (pathname.endsWith("/comments")) return { comments: [] };
+    if (pathname.endsWith("/move")) {
+      const body = typeof options.body === "string" ? JSON.parse(options.body) : options.body;
+      Object.assign(item, body, { version: item.version + 1 });
+      return { task: item };
+    }
+    return { task: item };
+  };
+  let resolveCompletion;
+  const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+  const rpc = async (_hostId, method) => method === "thread/start"
+    ? { thread: { id: "thread-9" } }
+    : { turn: { id: "turn-9" } };
+  const waitForTurn = {
+    awaitCompletion: false,
+    prepare() { return { wait: () => completion }; },
+  };
+  const result = await dispatchLocalTodos(request, { request: taskboardRequest, rpc, waitForTurn, stillCurrent: () => true });
+  assert.equal(result[0].state, "started");
+  assert.equal(item.status, "in_progress");
+  resolveCompletion({ status: "completed", items: [{ type: "agentMessage", text: "background done" }] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(item.status, "in_review");
+});
