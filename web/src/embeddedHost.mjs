@@ -62,10 +62,13 @@ export function requestEmbeddedHostHttp(input) {
       if (challengeTimer !== undefined) window.clearTimeout(challengeTimer);
       let settled = false;
       const timeout = window.setTimeout(() => finish(new Error("Taskboard host request timed out")), 30_000);
+      const abort = () => finish(new DOMException("Taskboard host request aborted", "AbortError"));
+      init.signal?.addEventListener("abort", abort, { once: true });
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
+        init.signal?.removeEventListener("abort", abort);
         window.removeEventListener("message", onMessage);
         if (error) reject(error);
         else resolve(value);
@@ -114,6 +117,7 @@ export async function fetchEmbeddedHost(url, init = {}) {
     method: (init.method || "GET").toUpperCase(),
     headers: Object.fromEntries(headers.entries()),
     body: typeof init.body === "string" ? { kind: "text", value: init.body } : undefined,
+    signal: init.signal,
   });
   if (!bridge) return null;
   const result = await bridge;

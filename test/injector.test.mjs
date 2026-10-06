@@ -128,6 +128,12 @@ test("the CDP bridge accepts service ensure and native task conversation start a
   assert.match(source, /taskboard-frame-recovery-start/);
   assert.match(source, /taskboard-frame-recovery-success/);
   assert.match(source, /taskboard-frame-recovery-failed/);
+  const recoverySource = source.slice(
+    source.indexOf("async function recoverTaskboardFrame"),
+    source.indexOf("function heartbeatBackoffMs"),
+  );
+  assert.match(recoverySource, /reloadFrameAfterRendererRecovery/);
+  assert.doesNotMatch(recoverySource, /window\.__codexTaskboardInjection__\?\.open\(\)/);
   assert.match(source, /heartbeatRecoveryMaxAttempts = 3/);
   assert.match(source, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
   assert.match(source, /"\/usr\/bin\/open",\s*\[\s*"-n"/);
