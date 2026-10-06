@@ -398,10 +398,10 @@ function startTaskboard({ detached, onCodexAppServerRequest }) {
   const child = spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
     cwd: projectRoot,
     detached,
-    env: {
-      ...withoutTaskboardLauncherEnvironment(process.env),
-      CODEX_TASKBOARD_REQUEST_LOG: "1",
-    },
+    // The Taskboard server is the authenticated child of this launcher. Keep
+    // CODEX_TASKBOARD_INSTANCE_* so /health can prove it belongs to us. The
+    // environment scrubber is only for Codex and other external children.
+    env: { ...process.env, CODEX_TASKBOARD_REQUEST_LOG: "1" },
     stdio: [...baseStdio, "ipc"],
   });
   console.log(JSON.stringify({
