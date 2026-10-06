@@ -153,7 +153,7 @@ export function parseTaskCreate(body, parseDevelopmentContext) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "projectId", "title", "description", "status", "priority", "labels", "sortOrder", "threadId", "threadBinding", "agentSession",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence", "captureId", "captureSource",
   ]));
   const projectId = validateProjectId(body.projectId ?? DEFAULT_PROJECT_ID);
   const task = {
@@ -172,6 +172,8 @@ export function parseTaskCreate(body, parseDevelopmentContext) {
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
+    captureId: body.captureId === undefined ? undefined : stringField(body.captureId, "captureId", { required: true, maxLength: 128 }),
+    captureSource: body.captureSource === undefined ? undefined : stringField(body.captureSource, "captureSource", { required: true, maxLength: 128 }),
   };
   if (task.recurrence && !task.dueDate) {
     throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires 'dueDate'");

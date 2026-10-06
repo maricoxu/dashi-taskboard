@@ -1304,6 +1304,42 @@ test("stale updates receive a version conflict", async () => {
   });
 });
 
+test("only a user can accept a task into done", async () => {
+  const baseUrl = await startServer();
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Review before done", status: "in_review" },
+  });
+  const task = created.body.task;
+
+  const agentAttempt = await request(baseUrl, `/api/tasks/${task.id}/move`, {
+    method: "POST",
+    headers: { "x-taskboard-client": "taskctl" },
+    body: { version: task.version, status: "done" },
+  });
+  assert.equal(agentAttempt.response.status, 409);
+  assert.equal(agentAttempt.body.error.code, "TASK_REVIEW_REQUIRED");
+
+  const accepted = await request(baseUrl, `/api/tasks/${task.id}/move`, {
+    method: "POST",
+    body: { version: task.version, status: "done" },
+  });
+  assert.equal(accepted.response.status, 200);
+  assert.equal(accepted.body.task.status, "done");
+});
+
+test("new captures retain a capture id and source without authorizing execution", async () => {
+  const baseUrl = await startServer();
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Captured note", description: "Raw input", captureId: "capture-123", captureSource: "mobile" },
+  });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.task.status, "backlog");
+  assert.equal(created.body.task.captureId, "capture-123");
+  assert.equal(created.body.task.captureSource, "mobile");
+});
+
 test("issue comments can be created, edited, listed, and deleted", async () => {
   const baseUrl = await startServer();
   const createTaskResult = await request(baseUrl, "/api/tasks", {

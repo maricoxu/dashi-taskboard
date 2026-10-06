@@ -518,6 +518,8 @@ function taskFromRow(row) {
     recurrence: row.recurrence_interval && row.recurrence_unit
       ? { interval: row.recurrence_interval, unit: row.recurrence_unit }
       : null,
+    captureId: row.capture_id ?? null,
+    captureSource: row.capture_source ?? null,
     archivedAt: row.archived_at,
     version: row.version,
     createdAt: row.created_at,
@@ -1148,7 +1150,7 @@ async function createTask(env, input, actor) {
         assignee_type, assignee_id, assignee_name, assignee_avatar_url,
         development_context_type, development_branch,
         start_date, due_date, recurrence_interval, recurrence_unit,
-        archived_at, version, created_at, updated_at, agent_session
+        archived_at, version, created_at, updated_at, agent_session, capture_id, capture_source
       )
       SELECT
         ?,
@@ -1167,7 +1169,7 @@ async function createTask(env, input, actor) {
         ?, ?, ?, ?,
         ?, ?,
         ?, ?, ?, ?,
-        NULL, 1, ?, ?, ?
+        NULL, 1, ?, ?, ?, ?, ?
       FROM projects
       WHERE projects.id = ?
     `).bind(
@@ -1199,6 +1201,8 @@ async function createTask(env, input, actor) {
       timestamp,
       timestamp,
       input.agentSession ? JSON.stringify(input.agentSession) : null,
+      input.captureId ?? id,
+      input.captureSource ?? (actor.type === "agent" ? "taskctl" : "dashboard"),
       input.projectId,
     ),
     env.DB.prepare(`
@@ -1258,6 +1262,13 @@ async function updateTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
   assertTaskVersion(current, input.version);
   const currentTask = taskFromRow(current);
+  if (input.changes.status === "done" && actor.type !== "user") {
+    throw new ApiError(
+      409,
+      "TASK_REVIEW_REQUIRED",
+      "Only a user can accept an in-review task and move it to done",
+    );
+  }
   const targetProject = Object.hasOwn(input.changes, "projectId")
     ? await requireProject(env, input.changes.projectId)
     : null;
@@ -1489,6 +1500,13 @@ async function updateTask(env, id, input, actor) {
 async function moveTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
   assertTaskVersion(current, input.version);
+  if (input.status === "done" && actor.type !== "user") {
+    throw new ApiError(
+      409,
+      "TASK_REVIEW_REQUIRED",
+      "Only a user can accept an in-review task and move it to done",
+    );
+  }
   if (current.archived_at !== null) {
     throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
   }

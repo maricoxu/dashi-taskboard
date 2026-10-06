@@ -448,6 +448,8 @@ export interface Task {
   externalOrigin?: string | null;
   externalKey?: string | null;
   externalUrl: string | null;
+  captureId: string | null;
+  captureSource: string | null;
   archivedAt: string | null;
   relations: TaskRelations;
   version: number;
@@ -547,4 +549,6 @@ export interface TaskDraft {
   startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
+  captureId?: string;
+  captureSource?: string;
 }

@@ -107,6 +107,8 @@ function taskFromRow(row) {
     externalOrigin: row.external_origin ?? null,
     externalKey: row.external_key ?? null,
     externalUrl: row.external_url ?? null,
+    captureId: row.capture_id ?? null,
+    captureSource: row.capture_source ?? null,
     archivedAt: row.archived_at,
     version: row.version,
     createdAt: row.created_at,
@@ -313,6 +315,8 @@ export class TaskboardDatabase {
         external_id TEXT,
         external_key TEXT,
         external_url TEXT,
+        capture_id TEXT,
+        capture_source TEXT,
         archived_at TEXT,
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
         created_at TEXT NOT NULL,
@@ -564,6 +568,12 @@ export class TaskboardDatabase {
     }
     if (!migratedTaskColumns.some((column) => column.name === "external_url")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN external_url TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "capture_id")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN capture_id TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "capture_source")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN capture_source TEXT");
     }
     this.database.exec(`
       DROP INDEX IF EXISTS tasks_external_source_id;
@@ -1865,8 +1875,8 @@ export class TaskboardDatabase {
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
           git_branch, worktree_path, worktree_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
-          archived_at, version, created_at, updated_at, agent_session
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?)
+          archived_at, version, created_at, updated_at, agent_session, capture_id, capture_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?)
       `).run(
         id,
         identifier,
@@ -1896,6 +1906,8 @@ export class TaskboardDatabase {
         timestamp,
         timestamp,
         input.agentSession ? JSON.stringify(input.agentSession) : null,
+        input.captureId ?? id,
+        input.captureSource ?? (input.actor.type === "agent" ? "taskctl" : "dashboard"),
       );
       this.database.exec("COMMIT");
       return this.getTask(id);
@@ -1908,6 +1920,13 @@ export class TaskboardDatabase {
   updateTask(id, version, changes, threadId, threadBinding, actor, agentSession) {
     const current = this.#requireTaskRecord(id);
     this.#requireVersion(current, version);
+    if (changes.status === "done" && actor.type !== "user") {
+      throw new ApiError(
+        409,
+        "TASK_REVIEW_REQUIRED",
+        "Only a user can accept an in-review task and move it to done",
+      );
+    }
     const activityChanges = taskFieldChanges(current, changes);
     const targetProject = Object.hasOwn(changes, "projectId")
       ? this.database.prepare("SELECT id, name, workspace_path, labels FROM projects WHERE id = ?").get(changes.projectId)
@@ -2053,6 +2072,13 @@ export class TaskboardDatabase {
   moveTask(id, version, status, sortOrder, threadId, threadBinding, actor, agentSession) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
+    if (status === "done" && actor.type !== "user") {
+      throw new ApiError(
+        409,
+        "TASK_REVIEW_REQUIRED",
+        "Only a user can accept an in-review task and move it to done",
+      );
+    }
     if (current.archivedAt !== null) {
       throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
     }

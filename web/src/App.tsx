@@ -2403,7 +2403,7 @@ export function App() {
         && !isJiraProject
       ) {
         event.preventDefault();
-        setEditor({ status: "todo" });
+        setEditor({ status: "backlog" });
       }
       if (
         event.key === "/"
@@ -2575,7 +2575,11 @@ export function App() {
     if (!selectedProjectId || !editor) return;
     const targetProjectId = editorProjectId ?? selectedProjectId;
     setActionError(null);
-    let saved = await createTaskRequest(targetProjectId, draft);
+    let saved = await createTaskRequest(targetProjectId, {
+      ...draft,
+      captureId: globalThis.crypto?.randomUUID?.() ?? `capture-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      captureSource: "dashboard",
+    });
     setProjects((current) => current.map((project) => (
       project.id === targetProjectId
         ? { ...project, issueCount: project.issueCount + 1 }
@@ -3697,7 +3701,7 @@ export function App() {
               <button
                 className="icon-button header-create-button"
                 type="button"
-                onClick={() => setEditor({ status: "todo" })}
+                onClick={() => setEditor({ status: "backlog" })}
                 aria-label={text("新建议题", "Create issue")}
                 title={text("新建议题 (C)", "Create issue (C)")}
               >
@@ -3922,7 +3926,7 @@ export function App() {
               <button
                 className="button secondary"
                 type="button"
-                onClick={() => setEditor({ status: "todo" })}
+                onClick={() => setEditor({ status: "backlog" })}
               >
                 {text("添加议题", "Add issue")}
               </button>
