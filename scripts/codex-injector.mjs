@@ -2428,11 +2428,22 @@ async function runLocalTaskboardAutomation(record) {
           return { wait: (turnId) => completion.wait(turnId, "Codex local automation turn timed out") };
         },
       };
+      const rpc = async (hostId, method, params) => {
+        let lastError;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const cdp = attempt === 0 ? healthyCdp : await healthyQuotaPolicyCdp();
+            return await requestCodexAppServerViaCdp(cdp, undefined, hostId, method, params);
+          } catch (error) {
+            lastError = error;
+            if (!isRetryableCodexTransportError(error) || attempt === 1) throw error;
+          }
+        }
+        throw lastError;
+      };
       record.diagnostics = await dispatchLocalTodos(record.request, {
         request: taskboardRequest,
-        rpc: (hostId, method, params) => requestCodexAppServerViaCdp(
-          healthyCdp, undefined, hostId, method, params,
-        ),
+        rpc,
         waitForTurn,
         stillCurrent,
         runtimeFile: taskboardRuntimeFile,
@@ -2442,17 +2453,10 @@ async function runLocalTaskboardAutomation(record) {
     } catch (error) {
       record.lastRun = { state: "failed", startedAt, finishedAt: Date.now(), error: error.message };
     } finally {
-      // The interval starts after the dispatch pass, not after each worker finishes.
-      // A renderer/CDP transport failure is transient: retry quickly so a
-      // reconnect does not leave the board idle for a full five minutes.
-      const retryableFailure = (record.diagnostics ?? []).some((diagnostic) => (
-        diagnostic.state === "failed"
-        && /CDP|WebSocket|renderer|App Server request timed out|No live Codex/i
-          .test((diagnostic.reasons ?? []).join(" "))
-      ));
-      record.nextRunAt = Date.now() + (
-        retryableFailure ? 10_000 : record.request.intervalMinutes * 60_000
-      );
+      // The interval starts after the dispatch pass, not after each worker
+      // finishes. A concrete transport error is shown in diagnostics and is
+      // retried on the normal interval; never spin in a tight retry loop.
+      record.nextRunAt = Date.now() + record.request.intervalMinutes * 60_000;
       await persistQuotaPolicies();
       console.log(JSON.stringify({ taskboardAutoClaim: {
         projectId: key, ...record.lastRun,
@@ -2751,6 +2755,12 @@ function currentQuotaPolicyCdp() {
     quotaPolicyCdps.delete(cdp);
   }
   throw new Error("No live Codex renderer is available for quota automation");
+}
+
+function isRetryableCodexTransportError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /CDP|WebSocket|renderer|Runtime\.evaluate|App Server request timed out|request timed out|socket closed|connection closed/i
+    .test(message);
 }
 
 async function healthyQuotaPolicyCdp() {

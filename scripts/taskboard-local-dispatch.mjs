@@ -74,17 +74,27 @@ export async function dispatchLocalTodos(
         [...(allTasks.tasks ?? [])].filter((item) => item.id !== task.id)
           .some((item) => (item.threadBinding?.threadId || item.threadId) === savedBinding.threadId)
       ) ? null : savedBinding;
-      target = existing ?? {
+      const bindingMatchesCurrentRuntime = existing
+        && existing.codexProjectId === request.codexProjectId
+        && existing.codexHostId === request.codexHostId
+        && existing.workspacePath === request.workspacePath;
+      if (existing && !bindingMatchesCurrentRuntime) {
+        diagnostic.reasons.push(
+          `旧 thread 绑定上下文已变化，重新创建执行线程（旧项目 ${existing.codexProjectId || "unknown"}，当前项目 ${request.codexProjectId}）`,
+        );
+      }
+      const resumable = bindingMatchesCurrentRuntime ? existing : null;
+      target = resumable ?? {
         threadId: null,
         codexProjectId: request.codexProjectId,
         codexProjectKind: "local",
         codexHostId: request.codexHostId,
         workspacePath: request.workspacePath,
       };
-      if (existing) {
-        threadId = existing.threadId;
+      if (resumable) {
+        threadId = resumable.threadId;
         try {
-          await rpc(existing.codexHostId, "thread/resume", { threadId });
+          await rpc(resumable.codexHostId, "thread/resume", { threadId });
         } catch (error) {
           if (!isStaleThreadBindingError(error)) throw error;
           // A saved local binding can outlive the Codex rollout/session store.
