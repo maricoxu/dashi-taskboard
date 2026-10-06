@@ -2,8 +2,10 @@ import { fetchEmbeddedHost } from "./embeddedHost.mjs";
 
 const memoryStorage = new Map<string, string>();
 export const PROJECT_BOARD_DISPLAY_SETTINGS_KEY_PREFIX = "taskboard.project-board-display-settings.v3.";
+const VOLATILE_STORAGE_KEYS = new Set(["taskboard.embedded-refresh-owner"]);
 const RETRY_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 5_000;
+const STORAGE_WRITE_TIMEOUT_MS = 10_000;
 let localStorageBackend: Storage | null = null;
 let serverBacked = false;
 let storageWrite = Promise.resolve();
@@ -44,34 +46,47 @@ function persist(key: string, value: string | null) {
     const body = JSON.stringify({ key, value });
     const keepalive = new TextEncoder().encode(body).byteLength <= 64 * 1024;
     let retryDelay = RETRY_DELAY_MS;
-    while (true) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       try {
         const url = new URL("api/client-storage", document.baseURI);
-        const response = await fetchEmbeddedHost(url, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body,
-          keepalive,
-        }) || await fetch(url, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body,
-          keepalive,
-        });
-        if (response.ok) return;
-        const error = new Error(`Taskboard storage returned ${response.status}`);
-        if (response.status >= 400 && response.status < 500) {
-          console.error(error);
-          return;
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), STORAGE_WRITE_TIMEOUT_MS);
+        try {
+          const response = await fetchEmbeddedHost(url, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body,
+            keepalive,
+            signal: controller.signal,
+          }) || await fetch(url, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body,
+            keepalive,
+            signal: controller.signal,
+          });
+          if (response.ok) return;
+          const error = new Error(`Taskboard storage returned ${response.status}`);
+          if (response.status >= 400 && response.status < 500) {
+            console.error(error);
+            return;
+          }
+          throw error;
+        } finally {
+          window.clearTimeout(timeout);
         }
-        throw error;
       } catch (error) {
         console.error(error);
+        if (attempt === 3) return;
         await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
         retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS);
       }
     }
   });
+}
+
+function isVolatileStorageKey(key: string) {
+  return VOLATILE_STORAGE_KEYS.has(key);
 }
 
 export async function initializeTaskboardStorage() {
@@ -108,7 +123,7 @@ export const taskboardStorage: Pick<Storage, "getItem" | "setItem" | "removeItem
       return;
     }
     memoryStorage.set(key, value);
-    if (serverBacked) persist(key, value);
+    if (serverBacked && !isVolatileStorageKey(key)) persist(key, value);
   },
   removeItem(key) {
     if (isProjectBoardDisplaySettingsKey(key)) {
@@ -121,6 +136,6 @@ export const taskboardStorage: Pick<Storage, "getItem" | "setItem" | "removeItem
       return;
     }
     memoryStorage.delete(key);
-    if (serverBacked) persist(key, null);
+    if (serverBacked && !isVolatileStorageKey(key)) persist(key, null);
   },
 };

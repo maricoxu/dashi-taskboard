@@ -3444,7 +3444,7 @@ function installTaskboardHostBinding(
       } }));
       try {
         await cdp.send("Runtime.evaluate", {
-          expression: "window.__codexTaskboardInjection__?.open()",
+          expression: "window.__codexTaskboardInjection__?.reloadFrameAfterRendererRecovery?.()",
           returnByValue: true,
         });
         console.log(JSON.stringify({ codexRenderer: {

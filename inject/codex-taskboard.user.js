@@ -1752,6 +1752,12 @@
     return true;
   }
 
+  function reloadFrameAfterRendererRecovery() {
+    if (!active || !frame) return false;
+    diagnostic("frame-recovery-requested", { active: true });
+    return reloadFrame();
+  }
+
   function managedTaskboardOrigin() {
     const configured = typeof window.__CODEX_TASKBOARD_MANAGED_ORIGIN__ === "string"
       ? window.__CODEX_TASKBOARD_MANAGED_ORIGIN__.trim()
@@ -2134,6 +2140,7 @@
     },
     refresh,
     reloadFrame,
+    reloadFrameAfterRendererRecovery,
     open: openTaskboard,
     close: closeTaskboard,
     destroy,
