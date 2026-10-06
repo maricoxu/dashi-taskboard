@@ -7,6 +7,7 @@ import type { OtherTaskTab } from "../issueBoardStatuses";
 import { LinearIcon } from "./LinearIcon";
 import { DeleteIcon, PlusIcon, RefreshIcon, StatusIcon } from "./SemanticIcons";
 import { TaskCard } from "./TaskCard";
+import { AutomationDiagnostics, type AutomationDiagnostic } from "./AutomationDiagnostics";
 
 function archivedDate(
   value: string | null,
@@ -164,6 +165,7 @@ interface OtherTasksPanelProps {
   onDragEnter: (status: TaskStatus) => void;
   onDrop: (status: TaskStatus, taskId: string, beforeTaskId: string | null) => void;
   onOpenConversation: (conversation: TaskConversationItem) => void;
+  automationDiagnostics?: AutomationDiagnostic[];
 }
 
 export function OtherTasksPanel({
@@ -201,6 +203,7 @@ export function OtherTasksPanel({
   onDragEnter,
   onDrop,
   onOpenConversation,
+  automationDiagnostics = [],
 }: OtherTasksPanelProps) {
   const { language, text } = useTaskboardI18n();
   const archived = activeTab === "archived";
@@ -228,6 +231,7 @@ export function OtherTasksPanel({
       aria-label={text("其他任务", "Other issues")}
       aria-hidden={!open}
     >
+      <AutomationDiagnostics diagnostics={automationDiagnostics} compact />
       <div
         className="other-tasks-tabs"
         role="tablist"

@@ -1355,6 +1355,8 @@
               items: response.items,
               quota: response.quota,
               idleReason: response.idleReason,
+              diagnostics: response.diagnostics,
+              lastRun: response.lastRun,
               policy: response.policy,
             },
       });

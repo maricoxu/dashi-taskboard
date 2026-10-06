@@ -234,10 +234,11 @@ async function host(t, { tasks = [todo("448")], existing = true, automationError
   };
 }
 
-test("Codex tool-level automation errors are returned immediately", async (t) => {
+test("local automation activation does not require a cron bridge call", async (t) => {
   const h = await host(t, { automationError: "Codex automation denied" });
-  await assert.rejects(h.save(), /Codex automation denied/);
-  assert.equal(h.records.size, 0);
+  const response = await h.save();
+  assert.equal(response.item.status, "ACTIVE");
+  assert.equal(h.records.get("local").request.enabledByUser, true);
 });
 
 test("local automation scans all todo without a global semantic gate", async (t) => {

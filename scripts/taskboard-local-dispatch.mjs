@@ -1,0 +1,139 @@
+function eligible(task, projectId) {
+  return task?.projectId === projectId
+    && task.status === "todo"
+    && task.archivedAt === null
+    && (task.relations?.blockedBy ?? []).every((item) => item.status === "done");
+}
+
+function promptFor(task, comments, request) {
+  const commentText = comments.length > 0
+    ? comments.map((comment) => `- ${comment.authorName} (${comment.createdAt}):\n${comment.body}`).join("\n\n")
+    : "（无）";
+  return [
+    `处理 Taskboard 议题 ${task.identifier}：${task.title}`,
+    `工作目录：${request.workspacePath}`,
+    "完整描述：",
+    task.description || "（无）",
+    "全部评论：",
+    commentText,
+    "",
+    "自动认领已由用户开启。不要因为描述中出现历史的等待、尚未授权或评审措辞而跳过；只有实际 API、依赖、版本冲突或明确的当前状态阻塞才停止。完成实现和直接验证后返回改动、验证结果和剩余风险。",
+  ].join("\n\n");
+}
+
+export async function dispatchLocalTodos(request, { request: taskboardRequest, rpc, stillCurrent }) {
+  const listed = await taskboardRequest(
+    `/api/tasks?projectId=${encodeURIComponent(request.taskboardProjectId)}&status=todo`,
+  );
+  const results = [];
+  for (const listedTask of listed.tasks ?? []) {
+    if (!eligible(listedTask, request.taskboardProjectId) || !stillCurrent()) continue;
+    const diagnostic = {
+      taskId: listedTask.id,
+      identifier: listedTask.identifier,
+      title: listedTask.title,
+      state: "skipped",
+      reasons: [],
+    };
+    let task = null;
+    let comments = [];
+    let owned = null;
+    let threadId = null;
+    let target = null;
+    const taskPath = `/api/tasks/${encodeURIComponent(listedTask.id)}`;
+    const commentsPath = `${taskPath}/comments`;
+    try {
+      const refreshed = await Promise.all([
+        taskboardRequest(taskPath),
+        taskboardRequest(commentsPath),
+      ]);
+      task = refreshed[0].task;
+      comments = refreshed[1].comments ?? [];
+      if (!eligible(task, request.taskboardProjectId) || !stillCurrent()) {
+        diagnostic.reasons.push("任务在刷新期间已不再是可认领 todo");
+        results.push(diagnostic);
+        continue;
+      }
+      const existing = task.threadBinding?.codexProjectKind === "local"
+        ? task.threadBinding
+        : null;
+      target = existing ?? {
+        threadId: null,
+        codexProjectId: request.codexProjectId,
+        codexProjectKind: "local",
+        codexHostId: request.codexHostId,
+        workspacePath: request.workspacePath,
+      };
+      if (existing) {
+        threadId = existing.threadId;
+        await rpc(existing.codexHostId, "thread/resume", { threadId });
+      } else {
+        const started = await rpc(request.codexHostId, "thread/start", {
+          model: request.model,
+          cwd: request.workspacePath,
+          runtimeWorkspaceRoots: [request.workspacePath],
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        });
+        threadId = started?.thread?.id;
+        if (typeof threadId !== "string" || !threadId) {
+          throw new Error("Codex 未创建执行线程");
+        }
+        target = { ...target, threadId };
+      }
+      owned = (await taskboardRequest(`${taskPath}/move`, {
+        method: "POST",
+        body: {
+          version: task.version,
+          status: "in_progress",
+          threadId,
+          threadBinding: target,
+        },
+      })).task;
+      const turn = await rpc(request.codexHostId, "turn/start", {
+        threadId,
+        input: [{ type: "text", text: promptFor(task, comments, request) }],
+        effort: request.reasoningEffort,
+      });
+      diagnostic.state = "started";
+      diagnostic.threadId = threadId;
+      diagnostic.turnId = turn?.turn?.id ?? null;
+      diagnostic.version = owned.version;
+      results.push(diagnostic);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      diagnostic.state = owned ? "blocked" : "failed";
+      diagnostic.threadId = threadId;
+      diagnostic.reasons.push(message);
+      // Once the task is owned, leave an auditable reason and stop retrying it
+      // every five minutes. A failure before ownership remains todo so the
+      // next round can retry a transient Codex or network error.
+      if (task && owned) {
+        try {
+          await taskboardRequest(commentsPath, {
+            method: "POST",
+            body: {
+              body: `自动认领失败，任务已阻塞：${message}`.slice(0, 100_000),
+              threadId,
+              threadBinding: target,
+            },
+          });
+          const blocked = await taskboardRequest(`${taskPath}/move`, {
+            method: "POST",
+            body: {
+              version: owned.version,
+              status: "blocked",
+              threadId,
+              threadBinding: target,
+            },
+          });
+          diagnostic.version = blocked.task?.version;
+        } catch (writeError) {
+          diagnostic.reasons.push(`状态写回失败：${writeError instanceof Error ? writeError.message : String(writeError)}`);
+        }
+      }
+      results.push(diagnostic);
+    }
+  }
+  return results;
+}

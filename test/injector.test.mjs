@@ -244,7 +244,7 @@ test("automation list rebuilds a stored policy on the incoming project identity"
   );
   assert.equal(result.policy, appliedRequest);
   assert.match(source, /reconcileStoredAutomationPolicy\(\s*request,\s*rpc/);
-  assert.match(source, /policy: storedAutomationPolicy\(current\.request\)/);
+  assert.match(source, /policy: storedAutomationPolicy\(current\.request(?:, current\.diagnostics(?:, current\.lastRun)?)?\)/);
 });
 
 test("managed private-CDP spawn failures are bounded without changing the launch path", async () => {
