@@ -1,13 +1,28 @@
 import { useTaskboardI18n } from "../i18n";
 
-export type AutomationDiagnosticReason = "dependency" | "existing-binding" | "explicit-wait";
+export type AutomationDiagnosticReason =
+  | "dependency"
+  | "existing-binding"
+  | "explicit-wait"
+  | "execution"
+  | "transport"
+  | "state";
+
+export type AutomationDiagnosticState =
+  | "waiting"
+  | "ready"
+  | "started"
+  | "in_review"
+  | "failed"
+  | "blocked"
+  | "skipped";
 
 export interface AutomationDiagnostic {
   taskId: string;
   identifier: string;
   title: string;
-  state: "waiting" | "ready";
-  reasons: Array<{ reasonCode: AutomationDiagnosticReason; detail: string }>;
+  state: AutomationDiagnosticState;
+  reasons: Array<{ reasonCode: AutomationDiagnosticReason; detail: string } | string>;
 }
 
 export interface AutomationLastRun {
@@ -25,7 +40,7 @@ interface AutomationDiagnosticsProps {
 
 export function AutomationDiagnostics({ diagnostics, compact = false, lastRun }: AutomationDiagnosticsProps) {
   const { text } = useTaskboardI18n();
-  if (diagnostics.length === 0) return null;
+  if (diagnostics.length === 0 && !lastRun) return null;
   const visible = compact ? diagnostics.slice(0, 5) : diagnostics;
   const hiddenCount = diagnostics.length - visible.length;
   return (
@@ -45,9 +60,9 @@ export function AutomationDiagnostics({ diagnostics, compact = false, lastRun }:
               <span>{diagnostic.title}</span>
             </div>
             {diagnostic.reasons.length > 0
-              ? diagnostic.reasons.map((reason) => (
-                <div className="automation-diagnostic-reason" key={reason.reasonCode}>
-                  {reason.detail}
+              ? diagnostic.reasons.map((reason, index) => (
+                <div className="automation-diagnostic-reason" key={typeof reason === "string" ? `${reason}-${index}` : reason.reasonCode}>
+                  {typeof reason === "string" ? reason : reason.detail}
                 </div>
               ))
               : <div className="automation-diagnostic-reason">

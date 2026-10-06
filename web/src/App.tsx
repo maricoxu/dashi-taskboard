@@ -486,7 +486,8 @@ function readProjectAutomations(): ProjectAutomations {
           && typeof (entry as AutomationDiagnostic).taskId === "string"
           && typeof (entry as AutomationDiagnostic).identifier === "string"
           && typeof (entry as AutomationDiagnostic).title === "string"
-          && ((entry as AutomationDiagnostic).state === "waiting" || (entry as AutomationDiagnostic).state === "ready")
+          && ["waiting", "ready", "started", "in_review", "failed", "blocked", "skipped"]
+            .includes((entry as AutomationDiagnostic).state)
           && Array.isArray((entry as AutomationDiagnostic).reasons)
         ))
         : undefined;
@@ -1416,6 +1417,8 @@ export function App() {
         && current[projectId]?.intervalMinutes === record.intervalMinutes
         && current[projectId]?.model === record.model
         && current[projectId]?.reasoningEffort === record.reasoningEffort
+        && JSON.stringify(current[projectId]?.diagnostics) === JSON.stringify(record.diagnostics)
+        && JSON.stringify(current[projectId]?.lastRun) === JSON.stringify(record.lastRun)
       ) {
         return current;
       }
