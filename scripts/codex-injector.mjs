@@ -2419,33 +2419,34 @@ async function runLocalTaskboardAutomation(record) {
     try {
       const healthyCdp = await healthyQuotaPolicyCdp();
       const waitForTurn = {
-        // A local automation pass only needs to start Codex work. Waiting for
-        // rollout completion here used to turn a successful turn/start into a
-        // false failure when the observer could not find an old rollout.
+        // Start all candidates in this pass; terminal notifications update
+        // their results asynchronously without blocking later candidates.
         awaitCompletion: false,
         prepare(hostId, threadId) {
           const completion = waitForRemoteAutomationTurn(hostId, threadId);
-          return { wait: (turnId) => completion.wait(turnId, "Codex local automation turn timed out") };
+          return { cancel: completion.cancel, wait: (turnId) => completion.wait(turnId, "未收到 Codex 完成通知，请查看任务会话；不代表执行失败") };
         },
       };
       const rpc = async (hostId, method, params) => {
-        let lastError;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          try {
-            const cdp = attempt === 0 ? healthyCdp : await healthyQuotaPolicyCdp();
-            return await requestCodexAppServerViaCdp(cdp, undefined, hostId, method, params);
-          } catch (error) {
-            lastError = error;
-            if (!isRetryableCodexTransportError(error) || attempt === 1) throw error;
-          }
-        }
-        throw lastError;
+        const cdp = healthyCdp.closed ? await healthyQuotaPolicyCdp() : healthyCdp;
+        // A lost response does not prove thread/start or turn/start failed.
+        // Return the error instead of replaying a mutation and starting twice.
+        return requestCodexAppServerViaCdp(cdp, undefined, hostId, method, params);
       };
-      record.diagnostics = await dispatchLocalTodos(record.request, {
+      const onDiagnostic = async (diagnostic) => {
+        if (quotaPolicyRecords.get(key) !== record) return;
+        record.diagnostics = [
+          ...(record.diagnostics ?? []).filter((item) => item.taskId !== diagnostic.taskId),
+          { ...diagnostic, reasons: [...diagnostic.reasons] },
+        ];
+        await persistQuotaPolicies();
+      };
+      await dispatchLocalTodos(record.request, {
         request: taskboardRequest,
         rpc,
         waitForTurn,
         stillCurrent,
+        onDiagnostic,
         runtimeFile: taskboardRuntimeFile,
         cliPath: path.join(projectRoot, "cli", "taskctl.mjs"),
       });
@@ -2755,12 +2756,6 @@ function currentQuotaPolicyCdp() {
     quotaPolicyCdps.delete(cdp);
   }
   throw new Error("No live Codex renderer is available for quota automation");
-}
-
-function isRetryableCodexTransportError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /CDP|WebSocket|renderer|Runtime\.evaluate|App Server request timed out|request timed out|socket closed|connection closed/i
-    .test(message);
 }
 
 async function healthyQuotaPolicyCdp() {

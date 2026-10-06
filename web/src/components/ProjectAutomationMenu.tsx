@@ -318,8 +318,8 @@ export function ProjectAutomationMenu({
             )}
         </p>
       )}
-      {automation?.diagnostics && automation.diagnostics.length > 0 && (
-        <AutomationDiagnostics diagnostics={automation.diagnostics} lastRun={automation.lastRun} />
+      {automation && (
+        <AutomationDiagnostics diagnostics={automation.diagnostics ?? []} lastRun={automation.lastRun} />
       )}
       {unavailableReason && <p className="project-automation-note">{unavailableReason}</p>}
       {error && error !== unavailableReason && <p className="project-automation-error" role="alert">{error}</p>}

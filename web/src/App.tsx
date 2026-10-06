@@ -1587,6 +1587,8 @@ export function App() {
           quotaAware: policy.quotaAware,
           ...(response.quota ? { quota: response.quota } : {}),
           idleReason: response.idleReason,
+          diagnostics: response.diagnostics,
+          lastRun: response.lastRun,
           intervalMinutes: policy.intervalMinutes,
           model: policy.model,
           reasoningEffort: policy.reasoningEffort,
@@ -1905,16 +1907,14 @@ export function App() {
   }, [selectedProjectId, reconcileProjectAutomation]);
 
   useEffect(() => {
-    if (!selectedProjectAutomation?.enabledByUser || !selectedProjectAutomation.idleReason) return;
-    // The host acknowledges the pause before doing the ephemeral semantic turn.
-    // Refresh that result through the existing list path, including auto-resume.
+    if (!selectedProjectAutomation?.enabledByUser) return;
+    // Dispatch results change independently of the switch and task revisions.
     const timer = window.setInterval(() => {
       void reconcileProjectAutomation();
-    }, selectedProjectAutomation.idleReason === "checking-todos" ? 5_000 : 60_000);
+    }, 10_000);
     return () => window.clearInterval(timer);
   }, [
     selectedProjectAutomation?.enabledByUser,
-    selectedProjectAutomation?.idleReason,
     reconcileProjectAutomation,
   ]);
 
@@ -3978,7 +3978,7 @@ export function App() {
           </Suspense>
         ) : (
           <div
-            className={`issue-board-layout${otherTasksAvailable && otherTasksVisible ? " has-other-tasks" : ""}`}
+            className={`issue-board-layout${otherTasksAvailable && otherTasksVisible ? " has-other-tasks" : ""}${selectedProjectAutomation?.lastRun || selectedProjectAutomation?.diagnostics?.length || automationError ? " has-automation-diagnostics" : ""}`}
             data-main-columns={mainBoardItems.length}
             style={{
               "--main-column-count": mainColumnCount,
@@ -3990,6 +3990,7 @@ export function App() {
             <AutomationDiagnostics
               diagnostics={selectedProjectAutomation?.diagnostics ?? []}
               lastRun={selectedProjectAutomation?.lastRun}
+              error={automationError}
               compact
             />
             {tasksLoading && !hasLoadedTasks ? (

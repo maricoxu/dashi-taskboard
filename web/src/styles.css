@@ -1218,6 +1218,18 @@ kbd {
 .automation-diagnostics.is-compact {
   grid-column: 1 / -1;
   margin: 8px 18px 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.issue-board-layout.has-automation-diagnostics {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.automation-diagnostic.is-failed,
+.automation-diagnostic.is-blocked {
+  border-left: 2px solid var(--danger);
+  padding-left: 8px;
 }
 
 .automation-diagnostic + .automation-diagnostic {

@@ -28,7 +28,7 @@ function isStaleThreadBindingError(error) {
 
 export async function dispatchLocalTodos(
   request,
-  { request: taskboardRequest, rpc, waitForTurn, stillCurrent },
+  { request: taskboardRequest, rpc, waitForTurn, stillCurrent, onDiagnostic = async () => {} },
 ) {
   const listed = await taskboardRequest(
     `/api/tasks?projectId=${encodeURIComponent(request.taskboardProjectId)}&status=todo`,
@@ -38,7 +38,7 @@ export async function dispatchLocalTodos(
   );
   const results = [];
   for (const listedTask of listed.tasks ?? []) {
-    if (!eligible(listedTask, request.taskboardProjectId) || !stillCurrent()) continue;
+    if (!stillCurrent()) break;
     const diagnostic = {
       taskId: listedTask.id,
       identifier: listedTask.identifier,
@@ -51,8 +51,41 @@ export async function dispatchLocalTodos(
     let owned = null;
     let threadId = null;
     let target = null;
+    let completion;
+    let turnAccepted = false;
+    let terminalFailure = false;
     const taskPath = `/api/tasks/${encodeURIComponent(listedTask.id)}`;
     const commentsPath = `${taskPath}/comments`;
+    const reportError = async (error) => {
+      completion?.cancel?.();
+      const message = error instanceof Error ? error.message : String(error);
+      diagnostic.state = "failed";
+      diagnostic.threadId = threadId;
+      diagnostic.reasons.push(message);
+      // An observer or write-back error does not prove that execution failed.
+      // Only a rejected start or an explicit failed/interrupted turn blocks it.
+      const uncertain = /timed?\s*out|CDP|WebSocket|renderer/i.test(message);
+      if (owned && (terminalFailure || (!turnAccepted && !uncertain))) {
+        try {
+          const current = (await taskboardRequest(taskPath)).task;
+          if (current?.status === "in_progress" && current.threadId === threadId) {
+            const blocked = await taskboardRequest(`${taskPath}/move`, {
+              method: "POST",
+              body: { version: current.version, status: "blocked", threadId, threadBinding: target },
+            });
+            diagnostic.state = "blocked";
+            diagnostic.version = blocked.task.version;
+            await taskboardRequest(commentsPath, {
+              method: "POST",
+              body: { body: `自动执行失败：${message}`, threadId, threadBinding: target },
+            });
+          }
+        } catch (writeError) {
+          diagnostic.reasons.push(`状态写回失败：${writeError.message}`);
+        }
+      }
+      await onDiagnostic(diagnostic);
+    };
     try {
       const refreshed = await Promise.all([
         taskboardRequest(taskPath),
@@ -61,8 +94,13 @@ export async function dispatchLocalTodos(
       task = refreshed[0].task;
       comments = refreshed[1].comments ?? [];
       if (!eligible(task, request.taskboardProjectId) || !stillCurrent()) {
-        diagnostic.reasons.push("任务在刷新期间已不再是可认领 todo");
+        const dependencies = (task?.relations?.blockedBy ?? []).filter((item) => item.status !== "done");
+        diagnostic.state = dependencies.length ? "waiting" : "skipped";
+        diagnostic.reasons.push(dependencies.length
+          ? `前置任务尚未完成：${dependencies.map((item) => `${item.identifier || item.id} (${item.status})`).join("、")}。完成前置任务或移除不再需要的依赖后可认领。`
+          : "任务状态已变化或自动认领已关闭");
         results.push(diagnostic);
+        await onDiagnostic(diagnostic);
         continue;
       }
       const savedBinding = task.threadBinding?.codexProjectKind === "local"
@@ -125,6 +163,7 @@ export async function dispatchLocalTodos(
         }
         target = { ...target, threadId };
       }
+      if (!stillCurrent()) break;
       owned = (await taskboardRequest(`${taskPath}/move`, {
         method: "POST",
         body: {
@@ -134,19 +173,36 @@ export async function dispatchLocalTodos(
           threadBinding: target,
         },
       })).task;
-      const completion = waitForTurn?.prepare(request.codexHostId, threadId);
+      completion = waitForTurn?.prepare(target.codexHostId, threadId);
       const turn = await rpc(request.codexHostId, "turn/start", {
         threadId,
         input: [{ type: "text", text: promptFor(task, comments, request) }],
         effort: request.reasoningEffort,
       });
       const turnId = turn?.turn?.id ?? null;
+      turnAccepted = true;
+      if (!turnId) throw new Error("Codex 未返回 turnId，执行状态未确认，请查看会话");
+      diagnostic.state = "started";
+      diagnostic.threadId = threadId;
+      diagnostic.turnId = turnId;
+      diagnostic.version = owned.version;
+      await onDiagnostic(diagnostic);
       if (completion && turnId) {
         const completeTurn = async () => {
           const completed = await completion.wait(turnId);
           if (completed?.status !== "completed") {
+            terminalFailure = completed?.status === "failed" || completed?.status === "interrupted";
             throw new Error(completed?.error?.message || `Codex turn ${completed?.status || "failed"}`);
           }
+          const current = (await taskboardRequest(taskPath)).task;
+          if (current.threadId !== threadId || current.status !== "in_progress") {
+            diagnostic.state = current.threadId === threadId && current.status === "in_review" ? "in_review" : "skipped";
+            if (diagnostic.state === "skipped") diagnostic.reasons.push("任务已被更新，保留当前状态");
+            owned = current;
+            await onDiagnostic(diagnostic);
+            return;
+          }
+          owned = current;
           const finalText = completed.items?.slice().reverse()
             .find((item) => item.type === "agentMessage")?.text?.trim() || "自动执行完成。";
           await taskboardRequest(commentsPath, {
@@ -168,81 +224,28 @@ export async function dispatchLocalTodos(
             },
           });
           owned = reviewed.task;
+          diagnostic.state = "in_review";
+          diagnostic.version = owned.version;
+          await onDiagnostic(diagnostic);
         };
         if (waitForTurn?.awaitCompletion === false) {
           // Starting a local turn must not hold the automation pass hostage to
           // Codex's rollout observer. Completion is reconciled asynchronously;
           // a real terminal error is written back to the task as blocked.
-          void completeTurn().catch(async (error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            try {
-              const current = (await taskboardRequest(taskPath)).task;
-              if (current?.status !== "in_progress" || current.threadId !== threadId) return;
-              await taskboardRequest(commentsPath, {
-                method: "POST",
-                body: {
-                  body: `自动认领执行失败，任务已阻塞：${message}`.slice(0, 100_000),
-                  threadId,
-                  threadBinding: target,
-                },
-              });
-              await taskboardRequest(`${taskPath}/move`, {
-                method: "POST",
-                body: {
-                  version: current.version,
-                  status: "blocked",
-                  threadId,
-                  threadBinding: target,
-                },
-              });
-            } catch (writeError) {
-              // The original error is already visible in the Codex source log;
-              // do not create an unhandled rejection while reporting it.
-              console.error(`Taskboard local turn reconciliation failed: ${writeError.message}`);
-            }
+          void completeTurn().catch(reportError).catch((error) => {
+            console.error(`Taskboard local turn reconciliation failed: ${error.message}`);
           });
         } else {
           await completeTurn();
         }
       }
-      diagnostic.state = "started";
       diagnostic.threadId = threadId;
       diagnostic.turnId = turnId;
       diagnostic.version = owned.version;
       if (owned.status === "in_review") diagnostic.state = "in_review";
       results.push(diagnostic);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      diagnostic.state = owned ? "blocked" : "failed";
-      diagnostic.threadId = threadId;
-      diagnostic.reasons.push(message);
-      // Once the task is owned, leave an auditable reason and stop retrying it
-      // every five minutes. A failure before ownership remains todo so the
-      // next round can retry a transient Codex or network error.
-      if (task && owned) {
-        try {
-          await taskboardRequest(commentsPath, {
-            method: "POST",
-            body: {
-              body: `自动认领失败，任务已阻塞：${message}`.slice(0, 100_000),
-              threadId,
-              threadBinding: target,
-            },
-          });
-          const blocked = await taskboardRequest(`${taskPath}/move`, {
-            method: "POST",
-            body: {
-              version: owned.version,
-              status: "blocked",
-              threadId,
-              threadBinding: target,
-            },
-          });
-          diagnostic.version = blocked.task?.version;
-        } catch (writeError) {
-          diagnostic.reasons.push(`状态写回失败：${writeError instanceof Error ? writeError.message : String(writeError)}`);
-        }
-      }
+      await reportError(error);
       results.push(diagnostic);
     }
   }
