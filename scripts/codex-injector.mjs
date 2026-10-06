@@ -228,6 +228,9 @@ const localAutomationRunPromises = new Map();
 const quotaPolicyCdps = new Set();
 const restoredQuotaPolicyCdps = new WeakSet();
 const quotaPolicyRestorePromises = new WeakMap();
+const taskboardHttpCache = new Map();
+const taskboardHttpInFlight = new Map();
+const TASKBOARD_READ_CACHE_TTL_MS = 750;
 const remoteAutomationTurnWaiters = new Map();
 let quotaPoliciesLoadPromise = null;
 let quotaPoliciesWritePromise = Promise.resolve();
@@ -395,6 +398,10 @@ function startTaskboard({ detached, onCodexAppServerRequest }) {
   const child = spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
     cwd: projectRoot,
     detached,
+    env: {
+      ...withoutTaskboardLauncherEnvironment(process.env),
+      CODEX_TASKBOARD_REQUEST_LOG: "1",
+    },
     stdio: [...baseStdio, "ipc"],
   });
   console.log(JSON.stringify({
@@ -1457,32 +1464,62 @@ async function proxyTaskboardHttpRequest(request) {
   let body;
   if (request.body?.kind === "text") body = request.body.value;
   else if (request.body?.kind === "base64") body = Buffer.from(request.body.value, "base64");
-  const response = await fetch(target, {
-    method: request.method,
-    headers,
-    ...(body === undefined ? {} : { body }),
-    cache: "no-store",
-  });
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > 8 * 1024 * 1024) {
-    throw new Error("Taskboard bridge response is too large");
+  const cacheable = request.method === "GET" && target.pathname.endsWith("/api/tasks");
+  const cacheKey = cacheable ? `${target.href}` : null;
+  if (cacheKey) {
+    const cached = taskboardHttpCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      console.log(JSON.stringify({ taskboardBridge: {
+        requestId: request.requestId, method: request.method, pathname: target.pathname,
+        status: cached.status, bytes: cached.bytes, cache: "hit",
+      } }));
+      return { requestId: request.requestId, ...cached.payload };
+    }
+    const existing = taskboardHttpInFlight.get(cacheKey);
+    if (existing) {
+      const payload = await existing;
+      console.log(JSON.stringify({ taskboardBridge: {
+        requestId: request.requestId, method: request.method, pathname: target.pathname,
+        status: payload.status, bytes: payload.bytes, cache: "coalesced",
+      } }));
+      return { requestId: request.requestId, ...payload.payload };
+    }
+  }
+  const fetchPromise = (async () => {
+    const response = await fetch(target, {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+      cache: "no-store",
+    });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > 8 * 1024 * 1024) throw new Error("Taskboard bridge response is too large");
+    const payload = {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      bodyBase64: bytes.toString("base64"),
+    };
+    return { status: response.status, bytes: bytes.length, payload };
+  })();
+  if (cacheKey) taskboardHttpInFlight.set(cacheKey, fetchPromise);
+  let fetched;
+  try { fetched = await fetchPromise; }
+  finally { if (cacheKey && taskboardHttpInFlight.get(cacheKey) === fetchPromise) taskboardHttpInFlight.delete(cacheKey); }
+  if (cacheKey && fetched.status >= 200 && fetched.status < 300) {
+    taskboardHttpCache.set(cacheKey, { ...fetched, expiresAt: Date.now() + TASKBOARD_READ_CACHE_TTL_MS });
   }
   console.log(JSON.stringify({
     taskboardBridge: {
       requestId: request.requestId,
       method: request.method,
       pathname: target.pathname,
-      status: response.status,
-      bytes: bytes.length,
+      status: fetched.status,
+      bytes: fetched.bytes,
+      cache: cacheKey ? "miss" : "none",
     },
   }));
-  return {
-    requestId: request.requestId,
-    status: response.status,
-    statusText: response.statusText,
-    headers: Object.fromEntries(response.headers.entries()),
-    bodyBase64: bytes.toString("base64"),
-  };
+  return { requestId: request.requestId, ...fetched.payload };
 }
 
 async function requestLegacyAutomationBridge(cdp, executionContextId, method, params) {

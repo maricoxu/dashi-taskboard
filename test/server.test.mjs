@@ -125,6 +125,22 @@ test("health and the default local project are available", async () => {
   assert.equal(result.body.projects[0].issueCount, 0);
 });
 
+test("local revision endpoint advances only after an emitted change", async () => {
+  const baseUrl = await startServer();
+  const initial = await request(baseUrl, "/api/revisions?since=0");
+  assert.equal(initial.response.status, 200);
+  assert.equal(initial.body.changed, false);
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { projectId: "local", title: "revision probe", description: "test" },
+  });
+  assert.equal(created.response.status, 201);
+  const next = await request(baseUrl, `/api/revisions?since=${initial.body.revision}`);
+  assert.equal(next.response.status, 200);
+  assert.equal(next.body.changed, true);
+  assert.ok(next.body.revision > initial.body.revision);
+});
+
 test("launcher mode proves service identity and hides every route behind its instance token", async () => {
   const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
   const instanceSecret = "2e587946-96d6-47b5-930a-1ba70214fa88";

@@ -1108,6 +1108,7 @@ function parseComposerTurn(body) {
 class EventHub {
   constructor() {
     this.clients = new Set();
+    this.revision = 0;
     this.keepAlive = setInterval(() => {
       for (const response of this.clients) response.write(": keep-alive\n\n");
     }, 20_000);
@@ -1127,6 +1128,7 @@ class EventHub {
   }
 
   emit(type, value) {
+    this.revision += 1;
     const event = {
       type,
       projectId: value.projectId ?? value.project?.id ?? value.task?.projectId,
@@ -1136,6 +1138,10 @@ class EventHub {
     };
     const message = `event: ${type}\ndata: ${JSON.stringify(event)}\n\n`;
     for (const response of this.clients) response.write(message);
+  }
+
+  currentRevision() {
+    return this.revision;
   }
 
   close() {
@@ -1730,6 +1736,20 @@ export function createTaskboardServer(options = {}) {
   }
 
   const server = createServer(async (request, response) => {
+    const requestId = randomUUID();
+    const startedAt = Date.now();
+    response.once("finish", () => {
+      if (process.env.CODEX_TASKBOARD_REQUEST_LOG !== "1") return;
+      if (!request.url?.startsWith("/api/")) return;
+      console.log(JSON.stringify({ taskboardHttp: {
+        event: "response",
+        requestId,
+        method: request.method,
+        url: request.url,
+        status: response.statusCode,
+        durationMs: Date.now() - startedAt,
+      } }));
+    });
     response.setHeader("x-content-type-options", "nosniff");
     response.setHeader("referrer-policy", "no-referrer");
     try {
@@ -2098,6 +2118,16 @@ export function createTaskboardServer(options = {}) {
             }
             : {}),
         });
+      }
+
+      if (pathname === "/api/revisions") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const since = Number(url.searchParams.get("since") ?? "0");
+        if (!Number.isSafeInteger(since) || since < 0) {
+          throw new ApiError(400, "INVALID_CURSOR", "'since' must be a non-negative integer");
+        }
+        const revision = events.currentRevision();
+        return sendJson(response, 200, { changed: revision > since, revision });
       }
 
       if (pathname === "/api/local/ai/catalog") {
